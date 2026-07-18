@@ -18,6 +18,26 @@ export default function Home() {
         }}
       >
         <h1 style={{ margin: 0 }}>ユア・ベストナビ</h1>
+        <nav style={{ marginTop: "12px" }}>
+  <a
+    href="#"
+    style={{ color: "white", marginRight: "20px", textDecoration: "none" }}
+  >
+    ホーム
+  </a>
+  <a
+    href="#"
+    style={{ color: "white", marginRight: "20px", textDecoration: "none" }}
+  >
+    カテゴリ
+  </a>
+  <a
+    href="#"
+    style={{ color: "white", textDecoration: "none" }}
+  >
+    お問い合わせ
+  </a>
+</nav>
       </header>
 
       <section
