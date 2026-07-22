@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export default function Home() {
   const categories = [
     "💻 ガジェット",
@@ -18,26 +20,40 @@ export default function Home() {
         }}
       >
         <h1 style={{ margin: 0 }}>ユア・ベストナビ</h1>
+
         <nav style={{ marginTop: "12px" }}>
-  <a
-    href="#"
-    style={{ color: "white", marginRight: "20px", textDecoration: "none" }}
-  >
-    ホーム
-  </a>
-  <a
-    href="#"
-    style={{ color: "white", marginRight: "20px", textDecoration: "none" }}
-  >
-    カテゴリ
-  </a>
-  <a
-    href="#"
-    style={{ color: "white", textDecoration: "none" }}
-  >
-    お問い合わせ
-  </a>
-</nav>
+          <Link
+            href="/"
+            style={{
+              color: "white",
+              marginRight: "20px",
+              textDecoration: "none",
+            }}
+          >
+            ホーム
+          </Link>
+
+          <Link
+            href="/category"
+            style={{
+              color: "white",
+              marginRight: "20px",
+              textDecoration: "none",
+            }}
+          >
+            カテゴリ
+          </Link>
+
+          <Link
+            href="#"
+            style={{
+              color: "white",
+              textDecoration: "none",
+            }}
+          >
+            お問い合わせ
+          </Link>
+        </nav>
       </header>
 
       <section
@@ -76,19 +92,29 @@ export default function Home() {
           }}
         >
           {categories.map((item) => (
-            <div
+            <Link
               key={item}
+              href="/category"
               style={{
-                background: "white",
-                borderRadius: "12px",
-                padding: "24px",
-                boxShadow: "0 4px 12px rgba(0,0,0,.08)",
-                fontWeight: "bold",
-                textAlign: "center",
+                textDecoration: "none",
+                color: "inherit",
               }}
             >
-              {item}
-            </div>
+              <div
+                style={{
+                  background: "white",
+                  borderRadius: "12px",
+                  padding: "24px",
+                  boxShadow: "0 4px 12px rgba(0,0,0,.08)",
+                  fontWeight: "bold",
+                  textAlign: "center",
+                  cursor: "pointer",
+                  transition: "transform 0.2s",
+                }}
+              >
+                {item}
+              </div>
+            </Link>
           ))}
         </div>
       </section>

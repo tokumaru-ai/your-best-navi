@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -24,10 +25,69 @@ export default function RootLayout({
 }>) {
   return (
     <html
-      lang="en"
+      lang="ja"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body
+        className={`${geistSans.variable} ${geistMono.variable} min-h-screen bg-gray-50 text-gray-900`}
+      >
+        <header
+          style={{
+            background: "#2563eb",
+            color: "white",
+            padding: "20px 40px",
+          }}
+        >
+          <h1 style={{ margin: 0 }}>ユア・ベストナビ</h1>
+
+          <nav style={{ marginTop: "12px" }}>
+            <Link
+              href="/"
+              style={{
+                color: "white",
+                marginRight: "20px",
+                textDecoration: "none",
+              }}
+            >
+              ホーム
+            </Link>
+
+            <Link
+              href="/category"
+              style={{
+                color: "white",
+                marginRight: "20px",
+                textDecoration: "none",
+              }}
+            >
+              カテゴリ
+            </Link>
+
+            <Link
+              href="/smartphone"
+              style={{
+                color: "white",
+                marginRight: "20px",
+                textDecoration: "none",
+              }}
+            >
+              スマホ
+            </Link>
+
+            <Link
+              href="#"
+              style={{
+                color: "white",
+                textDecoration: "none",
+              }}
+            >
+              お問い合わせ
+            </Link>
+          </nav>
+        </header>
+
+        {children}
+      </body>
     </html>
   );
 }
