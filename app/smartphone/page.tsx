@@ -4,14 +4,17 @@ const articles = [
   {
     title: "2026年おすすめスマホランキング",
     summary: "AIが価格・性能・口コミを比較しておすすめを紹介します。",
+    href: "/smartphone/best-2026",
   },
   {
     title: "iPhoneとAndroidどっちを選ぶ？",
     summary: "初心者にもわかりやすく違いを解説します。",
+    href: "#",
   },
   {
     title: "コスパ最強スマホ5選",
     summary: "5万円以下で買えるおすすめスマホを厳選。",
+    href: "#",
   },
 ];
 
@@ -42,34 +45,55 @@ export default function SmartphonePage() {
       </h1>
 
       {articles.map((article) => (
-        <div
+        <Link
           key={article.title}
+          href={article.href}
           style={{
-            background: "#ffffff",
-            borderRadius: "12px",
-            padding: "20px",
-            marginTop: "20px",
-            boxShadow: "0 4px 12px rgba(0,0,0,.08)",
+            textDecoration: "none",
+            color: "inherit",
+            display: "block",
           }}
         >
-          <h2
+          <div
             style={{
-              color: "#111827",
-              marginBottom: "10px",
+              background: "#ffffff",
+              borderRadius: "12px",
+              padding: "20px",
+              marginTop: "20px",
+              boxShadow: "0 4px 12px rgba(0,0,0,.08)",
+              cursor: "pointer",
+              transition: "transform 0.2s",
             }}
           >
-            {article.title}
-          </h2>
+            <h2
+              style={{
+                color: "#111827",
+                marginBottom: "10px",
+              }}
+            >
+              {article.title}
+            </h2>
 
-          <p
-            style={{
-              color: "#4b5563",
-              lineHeight: "1.6",
-            }}
-          >
-            {article.summary}
-          </p>
-        </div>
+            <p
+              style={{
+                color: "#4b5563",
+                lineHeight: "1.6",
+              }}
+            >
+              {article.summary}
+            </p>
+
+            <p
+              style={{
+                marginTop: "15px",
+                color: "#2563eb",
+                fontWeight: "bold",
+              }}
+            >
+              記事を読む →
+            </p>
+          </div>
+        </Link>
       ))}
     </main>
   );

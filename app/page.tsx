@@ -1,152 +1,136 @@
 import Link from "next/link";
+import { products } from "./data/products";
 
 export default function Home() {
-  const categories = [
-    "💻 ガジェット",
-    "📱 スマホ",
-    "🏠 家電",
-    "🎧 オーディオ",
-    "🏃 健康・フィットネス",
-    "💰 お得情報",
-  ];
-
   return (
-    <main style={{ background: "#f8fafc", minHeight: "100vh" }}>
-      <header
+    <main
+      style={{
+        background: "#f8fafc",
+        minHeight: "100vh",
+        maxWidth: "1000px",
+        margin: "0 auto",
+        padding: "40px 20px",
+        color: "#111827",
+      }}
+    >
+      <h1 style={{ fontSize: "42px", marginBottom: "10px" }}>
+        ユア・ベストナビ
+      </h1>
+
+      <p
         style={{
-          background: "#2563eb",
-          color: "white",
-          padding: "20px 40px",
+          color: "#6b7280",
+          marginBottom: "40px",
         }}
       >
-        <h1 style={{ margin: 0 }}>ユア・ベストナビ</h1>
+        AIが毎日、おすすめ商品を分析して紹介します。
+      </p>
 
-        <nav style={{ marginTop: "12px" }}>
-          <Link
-            href="/"
-            style={{
-              color: "white",
-              marginRight: "20px",
-              textDecoration: "none",
-            }}
-          >
-            ホーム
-          </Link>
+      <h2 style={{ marginBottom: "20px" }}>🔥 今日のおすすめ</h2>
 
-          <Link
-            href="/category"
-            style={{
-              color: "white",
-              marginRight: "20px",
-              textDecoration: "none",
-            }}
-          >
-            カテゴリ
-          </Link>
-
-          <Link
-            href="#"
-            style={{
-              color: "white",
-              textDecoration: "none",
-            }}
-          >
-            お問い合わせ
-          </Link>
-        </nav>
-      </header>
-
-      <section
-        style={{
-          maxWidth: "1000px",
-          margin: "50px auto",
-          textAlign: "center",
-          padding: "0 20px",
-        }}
-      >
-        <h2 style={{ fontSize: "42px", marginBottom: "20px" }}>
-          AIが、本当におすすめだけを紹介。
-        </h2>
-
-        <p style={{ color: "#555", fontSize: "18px" }}>
-          ガジェット・家電・日用品などをAIが比較・調査し、
-          わかりやすく紹介するレビューサイトです。
-        </p>
-      </section>
-
-      <section
-        style={{
-          maxWidth: "1000px",
-          margin: "0 auto",
-          padding: "20px",
-        }}
-      >
-        <h2>人気カテゴリー</h2>
-
+      {products.map((product) => (
         <div
+          key={product.id}
           style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(220px,1fr))",
-            gap: "20px",
-            marginTop: "20px",
+            background: "#ffffff",
+            borderRadius: "12px",
+            padding: "24px",
+            marginBottom: "20px",
+            boxShadow: "0 2px 10px rgba(0,0,0,.08)",
           }}
         >
-          {categories.map((item) => (
-            <Link
-              key={item}
-              href="/category"
-              style={{
-                textDecoration: "none",
-                color: "inherit",
-              }}
-            >
-              <div
+          <h3>{product.name}</h3>
+
+          <p>{product.description}</p>
+
+          <p>
+            <strong>価格：</strong>¥{product.price.toLocaleString()}
+          </p>
+
+          <p>
+            <strong>AIおすすめ度：</strong>⭐ {product.score}点
+          </p>
+
+          <p>
+            <strong>おすすめ理由：</strong>
+            {product.reason}
+          </p>
+
+          <div
+            style={{
+              display: "flex",
+              gap: "8px",
+              flexWrap: "wrap",
+              margin: "16px 0",
+            }}
+          >
+            {product.tags.map((tag) => (
+              <span
+                key={tag}
                 style={{
-                  background: "white",
-                  borderRadius: "12px",
-                  padding: "24px",
-                  boxShadow: "0 4px 12px rgba(0,0,0,.08)",
-                  fontWeight: "bold",
-                  textAlign: "center",
-                  cursor: "pointer",
-                  transition: "transform 0.2s",
+                  background: "#dbeafe",
+                  color: "#2563eb",
+                  padding: "4px 10px",
+                  borderRadius: "9999px",
                 }}
               >
-                {item}
-              </div>
+                #{tag}
+              </span>
+            ))}
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              gap: "10px",
+              flexWrap: "wrap",
+            }}
+          >
+            <Link
+              href={`/product/${product.id}`}
+              style={{
+                background: "#2563eb",
+                color: "#fff",
+                padding: "10px 18px",
+                borderRadius: "8px",
+                textDecoration: "none",
+              }}
+            >
+              詳細を見る
             </Link>
-          ))}
+
+            <a
+              href={product.amazonUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                background: "#f59e0b",
+                color: "#fff",
+                padding: "10px 18px",
+                borderRadius: "8px",
+                textDecoration: "none",
+              }}
+            >
+              Amazon
+            </a>
+
+            <a
+              href={product.rakutenUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                background: "#dc2626",
+                color: "#fff",
+                padding: "10px 18px",
+                borderRadius: "8px",
+                textDecoration: "none",
+              }}
+            >
+              楽天
+            </a>
+          </div>
         </div>
-      </section>
-
-      <section
-        style={{
-          maxWidth: "1000px",
-          margin: "60px auto",
-          padding: "20px",
-        }}
-      >
-        <h2>近日公開</h2>
-
-        <ul style={{ lineHeight: "2" }}>
-          <li>🤖 AIによる商品レビュー</li>
-          <li>🛒 楽天・Amazon比較</li>
-          <li>📈 ランキング</li>
-          <li>🐦 X自動投稿</li>
-        </ul>
-      </section>
-
-      <footer
-        style={{
-          background: "#111827",
-          color: "#fff",
-          textAlign: "center",
-          padding: "30px",
-          marginTop: "60px",
-        }}
-      >
-        © 2026 ユア・ベストナビ
-      </footer>
+      ))}
     </main>
   );
 }

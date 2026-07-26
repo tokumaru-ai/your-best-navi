@@ -1,89 +1,78 @@
 import Link from "next/link";
 
-const categories = [
+const recommends = [
   {
-    name: "💻 ガジェット",
-    description: "PC・周辺機器・便利グッズを紹介",
+    title: "🔥 今日のおすすめ",
+    description: "AIが厳選した本日一番おすすめの商品",
   },
   {
-    name: "📱 スマホ",
-    description: "iPhone・Android・アクセサリー",
+    title: "💰 Amazonタイムセール",
+    description: "今だけ安くなっている人気商品",
   },
   {
-    name: "🏠 家電",
-    description: "生活を便利にするおすすめ家電",
+    title: "🎁 楽天スーパーDEAL",
+    description: "ポイント還元率が高い商品",
   },
   {
-    name: "🎧 オーディオ",
-    description: "イヤホン・ヘッドホン・スピーカー",
-  },
-  {
-    name: "🏃 健康・フィットネス",
-    description: "ダイエット・ランニング・健康グッズ",
-  },
-  {
-    name: "💰 お得情報",
-    description: "ポイント・セール・節約術",
+    title: "📉 値下げ商品",
+    description: "価格が下がった狙い目の商品",
   },
 ];
 
-export default function CategoryPage() {
+export default function Home() {
   return (
     <main
       style={{
         background: "#f8fafc",
         minHeight: "100vh",
-        padding: "40px",
+        maxWidth: "1000px",
+        margin: "0 auto",
+        padding: "40px 20px",
+        color: "#111827",
       }}
     >
-      <h1
-        style={{
-          textAlign: "center",
-          marginBottom: "40px",
-        }}
-      >
-        カテゴリー一覧
+      <h1 style={{ fontSize: "42px" }}>
+        ユア・ベストナビ
       </h1>
 
-      <div
-        style={{
-          maxWidth: "1000px",
-          margin: "0 auto",
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))",
-          gap: "24px",
-        }}
-      >
-        {categories.map((category) => (
-          <div
-            key={category.name}
+      <p style={{ color: "#6b7280", marginBottom: "40px" }}>
+        AIが毎日おすすめ商品を分析して紹介します。
+      </p>
+
+      {recommends.map((item) => (
+        <div
+          key={item.title}
+          style={{
+            background: "#fff",
+            borderRadius: "12px",
+            padding: "24px",
+            marginBottom: "20px",
+            boxShadow: "0 2px 10px rgba(0,0,0,.08)",
+          }}
+        >
+          <h2>{item.title}</h2>
+
+          <p>{item.description}</p>
+
+          <button
             style={{
-              background: "white",
-              padding: "24px",
-              borderRadius: "16px",
-              boxShadow: "0 6px 20px rgba(0,0,0,.08)",
+              background: "#2563eb",
+              color: "#fff",
+              border: "none",
+              padding: "10px 18px",
+              borderRadius: "8px",
+              cursor: "pointer",
             }}
           >
-            <h2>{category.name}</h2>
+            見る
+          </button>
+        </div>
+      ))}
 
-            <p style={{ color: "#666" }}>
-              {category.description}
-            </p>
-
-            <Link
-              href="/"
-              style={{
-                display: "inline-block",
-                marginTop: "12px",
-                color: "#2563eb",
-                textDecoration: "none",
-                fontWeight: "bold",
-              }}
-            >
-              詳しく見る →
-            </Link>
-          </div>
-        ))}
+      <div style={{ marginTop: "40px" }}>
+        <Link href="/category">
+          カテゴリー一覧 →
+        </Link>
       </div>
     </main>
   );
