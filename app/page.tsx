@@ -2,132 +2,169 @@ import Link from "next/link";
 import { products } from "./data/products";
 
 export default function Home() {
+  const sortedProducts = [...products].sort((a, b) => b.score - a.score);
+
   return (
     <main
       style={{
-        background: "#f8fafc",
+        background: "#f3f4f6",
         minHeight: "100vh",
-        maxWidth: "1000px",
+        maxWidth: "1100px",
         margin: "0 auto",
         padding: "40px 20px",
         color: "#111827",
       }}
     >
-      <h1 style={{ fontSize: "42px", marginBottom: "10px" }}>
-        ユア・ベストナビ
+      <h1
+        style={{
+          fontSize: "46px",
+          marginBottom: "10px",
+          fontWeight: "bold",
+        }}
+      >
+        🚀 ユア・ベストナビ
       </h1>
 
       <p
         style={{
           color: "#6b7280",
           marginBottom: "40px",
+          fontSize: "18px",
         }}
       >
-        AIが毎日、おすすめ商品を分析して紹介します。
+        AIが価格・レビュー・人気度・値下げ情報から毎日おすすめ商品をランキングしています。
       </p>
 
-      <h2 style={{ marginBottom: "20px" }}>🔥 今日のおすすめ</h2>
-
-      {products.map((product) => (
+      {sortedProducts.map((product, index) => (
         <div
           key={product.id}
           style={{
-            background: "#ffffff",
-            borderRadius: "12px",
+            background: "#fff",
+            borderRadius: "18px",
             padding: "24px",
-            marginBottom: "20px",
-            boxShadow: "0 2px 10px rgba(0,0,0,.08)",
+            marginBottom: "28px",
+            display: "flex",
+            gap: "24px",
+            alignItems: "center",
+            boxShadow: "0 10px 30px rgba(0,0,0,.08)",
           }}
         >
-          <h3>{product.name}</h3>
-
-          <p>{product.description}</p>
-
-          <p>
-            <strong>価格：</strong>¥{product.price.toLocaleString()}
-          </p>
-
-          <p>
-            <strong>AIおすすめ度：</strong>⭐ {product.score}点
-          </p>
-
-          <p>
-            <strong>おすすめ理由：</strong>
-            {product.reason}
-          </p>
-
-          <div
+          <img
+            src={product.image}
+            alt={product.name}
             style={{
-              display: "flex",
-              gap: "8px",
-              flexWrap: "wrap",
-              margin: "16px 0",
+              width: "220px",
+              height: "160px",
+              objectFit: "contain",
+              background: "#ffffff",
+              border: "1px solid #e5e7eb",
+              borderRadius: "12px",
+              padding: "12px",
+              flexShrink: 0,
             }}
-          >
-            {product.tags.map((tag) => (
-              <span
-                key={tag}
+          />
+
+          <div style={{ flex: 1 }}>
+            <div
+              style={{
+                display: "inline-block",
+                background: "#fbbf24",
+                color: "#111827",
+                padding: "6px 14px",
+                borderRadius: "999px",
+                fontWeight: "bold",
+                marginBottom: "12px",
+              }}
+            >
+              🏆 第{index + 1}位
+            </div>
+
+            <h2 style={{ margin: "0 0 10px" }}>{product.name}</h2>
+
+            <p style={{ color: "#4b5563" }}>{product.description}</p>
+
+            <h3 style={{ color: "#dc2626" }}>
+              ¥{product.price.toLocaleString()}
+            </h3>
+
+            <p>⭐ AIおすすめ度：{product.score}点</p>
+
+            <p>{product.reason}</p>
+
+            <div
+              style={{
+                display: "flex",
+                gap: "8px",
+                flexWrap: "wrap",
+                margin: "18px 0",
+              }}
+            >
+              {product.tags.map((tag) => (
+                <span
+                  key={tag}
+                  style={{
+                    background: "#dbeafe",
+                    color: "#2563eb",
+                    padding: "6px 12px",
+                    borderRadius: "999px",
+                    fontWeight: "bold",
+                  }}
+                >
+                  #{tag}
+                </span>
+              ))}
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                gap: "12px",
+                flexWrap: "wrap",
+              }}
+            >
+              <Link
+                href={`/product/${product.id}`}
                 style={{
-                  background: "#dbeafe",
-                  color: "#2563eb",
-                  padding: "4px 10px",
-                  borderRadius: "9999px",
+                  background: "#2563eb",
+                  color: "#fff",
+                  padding: "10px 18px",
+                  borderRadius: "8px",
+                  textDecoration: "none",
                 }}
               >
-                #{tag}
-              </span>
-            ))}
-          </div>
+                詳細を見る
+              </Link>
 
-          <div
-            style={{
-              display: "flex",
-              gap: "10px",
-              flexWrap: "wrap",
-            }}
-          >
-            <Link
-              href={`/product/${product.id}`}
-              style={{
-                background: "#2563eb",
-                color: "#fff",
-                padding: "10px 18px",
-                borderRadius: "8px",
-                textDecoration: "none",
-              }}
-            >
-              詳細を見る
-            </Link>
+              <a
+                href={product.amazonUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  background: "#f59e0b",
+                  color: "#fff",
+                  padding: "10px 18px",
+                  borderRadius: "8px",
+                  textDecoration: "none",
+                }}
+              >
+                Amazon
+              </a>
 
-            <a
-              href={product.amazonUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{
-                background: "#f59e0b",
-                color: "#fff",
-                padding: "10px 18px",
-                borderRadius: "8px",
-                textDecoration: "none",
-              }}
-            >
-              Amazon
-            </a>
-
-            <a
-              href={product.rakutenUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{
-                background: "#dc2626",
-                color: "#fff",
-                padding: "10px 18px",
-                borderRadius: "8px",
-                textDecoration: "none",
-              }}
-            >
-              楽天
-            </a>
+              <a
+                href={product.rakutenUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  background: "#dc2626",
+                  color: "#fff",
+                  padding: "10px 18px",
+                  borderRadius: "8px",
+                  textDecoration: "none",
+                }}
+              >
+                楽天
+              </a>
+            </div>
           </div>
         </div>
       ))}
