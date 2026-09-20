@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getDb } from "@/lib/db";
+import { ensureSchema, getPool } from "@/lib/db";
 
 const KEYWORDS = ["モバイルバッテリー", "タンブラー", "ランニングシューズ"];
 const HITS = 5;
@@ -57,57 +57,65 @@ async function searchRakuten(keyword: string): Promise<RakutenItem[]> {
   return data.Items.map((entry: { Item: RakutenItem }) => entry.Item);
 }
 
-function saveItems(keyword: string, items: RakutenItem[]): number {
-  const db = getDb();
-
-  const upsertProduct = db.prepare(`
-    INSERT INTO products
-      (source, external_id, name, image_url, item_url, affiliate_url, category)
-    VALUES
-      ('rakuten', @externalId, @name, @imageUrl, @itemUrl, @affiliateUrl, @category)
-    ON CONFLICT (source, external_id) DO UPDATE SET
-      name          = excluded.name,
-      image_url     = excluded.image_url,
-      item_url      = excluded.item_url,
-      affiliate_url = excluded.affiliate_url,
-      category      = excluded.category,
-      updated_at    = datetime('now')
-    RETURNING id
-  `);
-
-  const insertHistory = db.prepare(`
-    INSERT INTO price_history
-      (product_id, price, review_count, review_average, rank)
-    VALUES
-      (@productId, @price, @reviewCount, @reviewAverage, @rank)
-  `);
+async function saveItems(keyword: string, items: RakutenItem[]): Promise<number> {
+  const client = await getPool().connect();
 
   // キーワード単位で1トランザクション。途中で失敗したらそのキーワード分は保存しない
-  const saveAll = db.transaction((rows: RakutenItem[]) => {
-    rows.forEach((item, index) => {
-      const { id } = upsertProduct.get({
-        externalId: item.itemCode,
-        name: item.itemName,
-        imageUrl: item.mediumImageUrls?.[0]?.imageUrl ?? null,
-        itemUrl: item.itemUrl ?? null,
-        affiliateUrl: item.affiliateUrl ?? null,
-        category: keyword,
-      }) as { id: number };
+  try {
+    await client.query("BEGIN");
 
-      insertHistory.run({
-        productId: id,
-        price: item.itemPrice,
-        reviewCount: item.reviewCount ?? null,
-        reviewAverage: item.reviewAverage ?? null,
-        // 検索結果内の表示順（1始まり）
-        rank: index + 1,
-      });
-    });
+    for (const [index, item] of items.entries()) {
+      const { rows } = await client.query(
+        `
+        INSERT INTO products
+          (source, external_id, name, image_url, item_url, affiliate_url, category)
+        VALUES
+          ('rakuten', $1, $2, $3, $4, $5, $6)
+        ON CONFLICT (source, external_id) DO UPDATE SET
+          name          = excluded.name,
+          image_url     = excluded.image_url,
+          item_url      = excluded.item_url,
+          affiliate_url = excluded.affiliate_url,
+          category      = excluded.category,
+          updated_at    = now()
+        RETURNING id
+        `,
+        [
+          item.itemCode,
+          item.itemName,
+          item.mediumImageUrls?.[0]?.imageUrl ?? null,
+          item.itemUrl ?? null,
+          item.affiliateUrl ?? null,
+          keyword,
+        ]
+      );
+      const productId = rows[0].id as number;
 
-    return rows.length;
-  });
+      await client.query(
+        `
+        INSERT INTO price_history
+          (product_id, price, review_count, review_average, rank)
+        VALUES ($1, $2, $3, $4, $5)
+        `,
+        [
+          productId,
+          item.itemPrice,
+          item.reviewCount ?? null,
+          item.reviewAverage ?? null,
+          // 検索結果内の表示順（1始まり）
+          index + 1,
+        ]
+      );
+    }
 
-  return saveAll(items);
+    await client.query("COMMIT");
+    return items.length;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function GET(request: Request) {
@@ -123,6 +131,8 @@ export async function GET(request: Request) {
     );
   }
 
+  await ensureSchema();
+
   const results: KeywordResult[] = [];
 
   for (const [index, keyword] of KEYWORDS.entries()) {
@@ -130,7 +140,7 @@ export async function GET(request: Request) {
 
     try {
       const items = await searchRakuten(keyword);
-      const saved = saveItems(keyword, items);
+      const saved = await saveItems(keyword, items);
       results.push({ keyword, saved });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

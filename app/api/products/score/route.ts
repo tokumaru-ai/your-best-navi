@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getDb } from "@/lib/db";
+import { ensureSchema, getSql } from "@/lib/db";
 
 const LIMIT = 10;
 
@@ -19,21 +19,21 @@ WITH ranked AS (
   FROM price_history
 )
 SELECT
-  p.id                                                   AS id,
-  p.name                                                 AS name,
-  cur.price                                              AS currentPrice,
-  prev.price                                             AS previousPrice,
-  prev.price - cur.price                                 AS dropAmount,
-  ROUND((prev.price - cur.price) * 100.0 / prev.price, 1) AS dropRate,
-  cur.review_average                                     AS reviewAverage,
-  cur.review_count                                       AS reviewCount,
-  p.affiliate_url                                        AS affiliateUrl,
-  COUNT(*) OVER ()                                       AS totalFound
+  p.id                                                    AS id,
+  p.name                                                  AS name,
+  cur.price                                               AS "currentPrice",
+  prev.price                                              AS "previousPrice",
+  prev.price - cur.price                                  AS "dropAmount",
+  ROUND((prev.price - cur.price) * 100.0 / prev.price, 1) AS "dropRate",
+  cur.review_average                                      AS "reviewAverage",
+  cur.review_count                                        AS "reviewCount",
+  p.affiliate_url                                         AS "affiliateUrl",
+  COUNT(*) OVER ()                                        AS "totalFound"
 FROM products p
 JOIN ranked cur  ON cur.product_id  = p.id AND cur.rn  = 1
 JOIN ranked prev ON prev.product_id = p.id AND prev.rn = 2
 WHERE prev.price - cur.price > 0
-ORDER BY (prev.price - cur.price) * 1.0 / prev.price DESC, dropAmount DESC, p.id ASC
+ORDER BY (prev.price - cur.price) * 1.0 / prev.price DESC, "dropAmount" DESC, p.id ASC
 LIMIT ${LIMIT}
 `;
 
@@ -56,7 +56,8 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const rows = getDb().prepare(SCORE_QUERY).all() as ScoredRow[];
+  await ensureSchema();
+  const rows = (await getSql().query(SCORE_QUERY)) as ScoredRow[];
 
   return NextResponse.json({
     // 値下げが検知された商品の総数（上位 LIMIT 件に絞る前）
