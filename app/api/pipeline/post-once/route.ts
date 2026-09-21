@@ -63,14 +63,34 @@ async function upsertDedup(productId: number) {
 
 export async function GET(request: Request) {
   const secret = process.env.X_POST_SECRET;
-  if (!secret || request.headers.get("x-api-secret") !== secret) {
+  const cronSecret = process.env.CRON_SECRET;
+
+  // 手動実行（x-api-secret）か、Vercel Cron（CRON_SECRET が自動付与する Authorization）のどちらかで認証する
+  const isManualCall =
+    !!secret && request.headers.get("x-api-secret") === secret;
+  const isVercelCron =
+    !!cronSecret &&
+    request.headers.get("authorization") === `Bearer ${cronSecret}`;
+
+  if (!isManualCall && !isVercelCron) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  // 下流のルートは x-api-secret を要求するため、Cron 経由でも使えるよう内部呼び出し用のリクエストを作る
+  if (!secret) {
+    return NextResponse.json(
+      { error: "X_POST_SECRET が設定されていません" },
+      { status: 500 }
+    );
+  }
+  const internalRequest = new Request(request.url, {
+    headers: { "x-api-secret": secret },
+  });
 
   await ensureSchema();
 
   // a. 値下げ率トップ1件の投稿文を生成する
-  const generateRes = await generatePost(request);
+  const generateRes = await generatePost(internalRequest);
 
   if (generateRes.status === 404) {
     const body = await generateRes.json().catch(() => ({ error: "値下げが検知された商品がありません" }));
@@ -87,7 +107,7 @@ export async function GET(request: Request) {
     // エラー本文に商品情報が含まれない場合は score から改めて特定する
     let productId = errorBody.product?.id;
     if (productId === undefined) {
-      const scoreRes = await getScoredProducts(request);
+      const scoreRes = await getScoredProducts(internalRequest);
       if (scoreRes.ok) {
         const scoreBody = (await scoreRes.json()) as { products: GeneratedProduct[] };
         productId = scoreBody.products[0]?.id;
