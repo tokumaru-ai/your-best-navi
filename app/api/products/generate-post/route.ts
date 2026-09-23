@@ -14,6 +14,7 @@ type ScoredProduct = {
   reviewAverage: number | null;
   reviewCount: number | null;
   affiliateUrl: string | null;
+  imageUrl: string | null;
 };
 
 const SYSTEM_PROMPT = `あなたは、値下げされた商品をX（旧Twitter）で紹介する投稿文を書くアシスタントです。

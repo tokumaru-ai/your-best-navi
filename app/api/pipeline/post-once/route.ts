@@ -14,6 +14,7 @@ type GeneratedProduct = {
   reviewAverage: number | null;
   reviewCount: number | null;
   affiliateUrl: string | null;
+  imageUrl: string | null;
 };
 
 type GeneratedPostResponse = {
@@ -143,7 +144,7 @@ export async function GET(request: Request) {
       "x-api-secret": secret,
       "content-type": "application/json",
     },
-    body: JSON.stringify({ text: post }),
+    body: JSON.stringify({ text: post, imageUrl: product.imageUrl }),
   });
 
   let xPostOk: boolean;

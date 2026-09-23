@@ -28,6 +28,7 @@ SELECT
   cur.review_average                                      AS "reviewAverage",
   cur.review_count                                        AS "reviewCount",
   p.affiliate_url                                         AS "affiliateUrl",
+  p.image_url                                             AS "imageUrl",
   COUNT(*) OVER ()                                        AS "totalFound"
 FROM products p
 JOIN ranked cur  ON cur.product_id  = p.id AND cur.rn  = 1
@@ -47,6 +48,7 @@ type ScoredRow = {
   reviewAverage: number | null;
   reviewCount: number | null;
   affiliateUrl: string | null;
+  imageUrl: string | null;
   totalFound: number;
 };
 
@@ -73,6 +75,7 @@ export async function GET(request: Request) {
       reviewAverage: row.reviewAverage,
       reviewCount: row.reviewCount,
       affiliateUrl: row.affiliateUrl,
+      imageUrl: row.imageUrl,
     })),
   });
 }
