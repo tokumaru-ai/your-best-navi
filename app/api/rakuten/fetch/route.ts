@@ -1,9 +1,16 @@
 import { NextResponse } from "next/server";
 import { ensureSchema, getPool } from "@/lib/db";
 
-const KEYWORDS = ["モバイルバッテリー", "タンブラー", "ランニングシューズ"];
-const HITS = 5;
-// 楽天APIは1アプリあたり1リクエスト/秒の制限があるため、キーワード間で待つ
+// genreId は調査時点（GenreSearch API で実際に特定した値）のもの。
+// 楽天側でジャンル構成が変わることがあるため、値が合わなくなったら再調査する。
+const GENRES = [
+  { genreId: 560276, category: "スマートフォン・タブレットアクセサリ" },
+  { genreId: 502835, category: "イヤホン・ヘッドホン" },
+  { genreId: 568380, category: "スマートウォッチ・アクセサリ" },
+  { genreId: 509433, category: "モバイルバッテリー・充電器" },
+];
+const HITS = 10;
+// 楽天APIは1アプリあたり1リクエスト/秒の制限があるため、ジャンル間で待つ
 const INTERVAL_MS = 1100;
 
 type RakutenItem = {
@@ -15,29 +22,31 @@ type RakutenItem = {
   mediumImageUrls?: { imageUrl: string }[];
   reviewCount?: number;
   reviewAverage?: number;
+  rank?: number;
 };
 
-type KeywordResult = {
-  keyword: string;
+type GenreResult = {
+  category: string;
+  genreId: number;
   saved: number;
   error?: string;
 };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function searchRakuten(keyword: string): Promise<RakutenItem[]> {
+async function fetchRanking(genreId: number): Promise<RakutenItem[]> {
   const appId = process.env.RAKUTEN_APP_ID;
   const accessKey = process.env.RAKUTEN_ACCESS_KEY;
   const affiliateId = process.env.RAKUTEN_AFFILIATE_ID;
   const origin = process.env.RAKUTEN_ORIGIN ?? "";
 
   const url =
-    `https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20260701` +
+    `https://openapi.rakuten.co.jp/ichibaranking/api/IchibaItem/Ranking/20220601` +
     `?applicationId=${appId}` +
     `&accessKey=${accessKey}` +
     `&affiliateId=${affiliateId}` +
-    `&keyword=${encodeURIComponent(keyword)}` +
-    `&hits=${HITS}`;
+    `&genreId=${genreId}` +
+    `&page=1`;
 
   const res = await fetch(url, {
     headers: {
@@ -54,13 +63,13 @@ async function searchRakuten(keyword: string): Promise<RakutenItem[]> {
     throw new Error(`Rakuten API error (HTTP ${res.status}): ${detail}`);
   }
 
-  return data.Items.map((entry: { Item: RakutenItem }) => entry.Item);
+  return data.Items.map((entry: { Item: RakutenItem }) => entry.Item).slice(0, HITS);
 }
 
-async function saveItems(keyword: string, items: RakutenItem[]): Promise<number> {
+async function saveItems(category: string, items: RakutenItem[]): Promise<number> {
   const client = await getPool().connect();
 
-  // キーワード単位で1トランザクション。途中で失敗したらそのキーワード分は保存しない
+  // ジャンル単位で1トランザクション。途中で失敗したらそのジャンル分は保存しない
   try {
     await client.query("BEGIN");
 
@@ -86,7 +95,7 @@ async function saveItems(keyword: string, items: RakutenItem[]): Promise<number>
           item.mediumImageUrls?.[0]?.imageUrl ?? null,
           item.itemUrl ?? null,
           item.affiliateUrl ?? null,
-          keyword,
+          category,
         ]
       );
       const productId = rows[0].id as number;
@@ -102,8 +111,8 @@ async function saveItems(keyword: string, items: RakutenItem[]): Promise<number>
           item.itemPrice,
           item.reviewCount ?? null,
           item.reviewAverage ?? null,
-          // 検索結果内の表示順（1始まり）
-          index + 1,
+          // ランキング上の順位（1始まり）。取れない場合は取得順で代用する
+          item.rank ?? index + 1,
         ]
       );
     }
@@ -133,19 +142,19 @@ export async function GET(request: Request) {
 
   await ensureSchema();
 
-  const results: KeywordResult[] = [];
+  const results: GenreResult[] = [];
 
-  for (const [index, keyword] of KEYWORDS.entries()) {
+  for (const [index, genre] of GENRES.entries()) {
     if (index > 0) await sleep(INTERVAL_MS);
 
     try {
-      const items = await searchRakuten(keyword);
-      const saved = await saveItems(keyword, items);
-      results.push({ keyword, saved });
+      const items = await fetchRanking(genre.genreId);
+      const saved = await saveItems(genre.category, items);
+      results.push({ category: genre.category, genreId: genre.genreId, saved });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`[rakuten/fetch] "${keyword}" failed: ${message}`);
-      results.push({ keyword, saved: 0, error: message });
+      console.error(`[rakuten/fetch] genreId=${genre.genreId} (${genre.category}) failed: ${message}`);
+      results.push({ category: genre.category, genreId: genre.genreId, saved: 0, error: message });
     }
   }
 
