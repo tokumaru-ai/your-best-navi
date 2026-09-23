@@ -22,7 +22,8 @@ export const products: Product[] = [
     score: 96,
     reason: "価格が下がりレビュー評価も非常に高い人気商品。",
     tags: ["値下げ", "人気急上昇"],
-    image: "/anker.jpg",
+    image:
+      "https://thumbnail.image.rakuten.co.jp/@0_mall/anker/cabinet/tmb/a1/a1657_normal.jpg?_ex=440x320",
     amazonUrl: "#",
     rakutenUrl: "#",
   },
