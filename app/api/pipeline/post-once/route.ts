@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ensureSchema, getSql } from "@/lib/db";
+import { GET as fetchRakutenPrices } from "../../rakuten/fetch/route";
 import { GET as generatePost } from "../../products/generate-post/route";
 import { GET as getScoredProducts } from "../../products/score/route";
 import { POST as postToX } from "../../x-post/route";
@@ -89,6 +90,19 @@ export async function GET(request: Request) {
   });
 
   await ensureSchema();
+
+  // 0. まず楽天の最新価格を取得・保存する。失敗しても値下げ検知・投稿処理は続行する
+  try {
+    const fetchRes = await fetchRakutenPrices(internalRequest);
+    if (!fetchRes.ok) {
+      const body = await fetchRes.json().catch(() => ({}));
+      console.error(`[pipeline/post-once] rakuten/fetch failed: ${JSON.stringify(body)}`);
+    }
+  } catch (error) {
+    console.error(
+      `[pipeline/post-once] rakuten/fetch threw: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
 
   // a. 値下げ率トップ1件の投稿文を生成する
   const generateRes = await generatePost(internalRequest);
