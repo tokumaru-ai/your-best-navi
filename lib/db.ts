@@ -42,6 +42,19 @@ CREATE TABLE IF NOT EXISTS post_dedup (
   product_id     INTEGER PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE,
   last_posted_at TIMESTAMPTZ NOT NULL
 );
+
+-- Cron（post-once）が実際に発火したか、成功・スキップ・失敗のどれだったかを
+-- 値下げの有無やposts書き込みの成否によらず、必ず1回のみ残すためのログ。
+CREATE TABLE IF NOT EXISTS cron_runs (
+  id           SERIAL PRIMARY KEY,
+  started_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  finished_at  TIMESTAMPTZ,
+  trigger      TEXT NOT NULL CHECK (trigger IN ('cron', 'manual')),
+  dry_run      BOOLEAN NOT NULL DEFAULT false,
+  status       TEXT NOT NULL CHECK (status IN ('running', 'success', 'skipped', 'failed')),
+  detail       TEXT,
+  product_id   INTEGER REFERENCES products(id) ON DELETE SET NULL
+);
 `;
 
 // dev のホットリロードでモジュールが再評価されても接続を使い回す
