@@ -43,6 +43,40 @@ CREATE TABLE IF NOT EXISTS post_dedup (
   last_posted_at TIMESTAMPTZ NOT NULL
 );
 
+-- Xでバズっている投稿を保存し、AIで商品名を抽出するための下書きテーブル。
+-- rakuten_product_id 等は、楽天でのマッチング結果（match-rakuten）を後から書き足す列。
+-- posted_from_trending は、値下げとは別の投稿トリガーとして使われたかどうかのフラグ。
+CREATE TABLE IF NOT EXISTS x_trending_posts (
+  id                     SERIAL PRIMARY KEY,
+  post_id                TEXT UNIQUE NOT NULL,
+  text                   TEXT NOT NULL,
+  author_id              TEXT,
+  like_count             INTEGER,
+  retweet_count          INTEGER,
+  reply_count            INTEGER,
+  quote_count            INTEGER,
+  reaction_score         INTEGER,
+  created_at             TIMESTAMPTZ,
+  fetched_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+  extracted_product_name TEXT,
+  extraction_confidence  TEXT CHECK (extraction_confidence IN ('high', 'low', 'none')),
+  rakuten_product_id     INTEGER REFERENCES products(id) ON DELETE SET NULL,
+  rakuten_checked_at     TIMESTAMPTZ,
+  current_price          INTEGER,
+  review_average         NUMERIC,
+  review_count           INTEGER,
+  posted_from_trending   BOOLEAN NOT NULL DEFAULT false
+);
+
+-- x_trending_posts は本テーブル追加より前にデプロイ済みのため、
+-- CREATE TABLE IF NOT EXISTS だけでは既存環境に列が増えない。IF NOT EXISTS で安全に retrofit する。
+ALTER TABLE x_trending_posts ADD COLUMN IF NOT EXISTS rakuten_product_id INTEGER REFERENCES products(id) ON DELETE SET NULL;
+ALTER TABLE x_trending_posts ADD COLUMN IF NOT EXISTS rakuten_checked_at TIMESTAMPTZ;
+ALTER TABLE x_trending_posts ADD COLUMN IF NOT EXISTS current_price INTEGER;
+ALTER TABLE x_trending_posts ADD COLUMN IF NOT EXISTS review_average NUMERIC;
+ALTER TABLE x_trending_posts ADD COLUMN IF NOT EXISTS review_count INTEGER;
+ALTER TABLE x_trending_posts ADD COLUMN IF NOT EXISTS posted_from_trending BOOLEAN NOT NULL DEFAULT false;
+
 -- Cron（post-once）が実際に発火したか、成功・スキップ・失敗のどれだったかを
 -- 値下げの有無やposts書き込みの成否によらず、必ず1回のみ残すためのログ。
 CREATE TABLE IF NOT EXISTS cron_runs (
