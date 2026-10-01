@@ -2,8 +2,13 @@ import { NextResponse } from "next/server";
 import { TwitterApi } from "twitter-api-v2";
 import { ensureSchema, getPool } from "@/lib/db";
 
-const KEYWORDS = ["買ってよかった", "コスパ", "愛用品"];
+// 「買って良かった」は表記ゆれ（ひらがな/漢字）をORでまとめて拾う
+const KEYWORDS = ["神アイテム", "(買って良かった OR 買ってよかった)", "バズってる"];
 const MAX_RESULTS = 20;
+// min_likes は X API の検索演算子（Standalone、recent search で利用可）。
+// Web検索のmin_faves/min_retweetsはAPIでは無効な名称のため、min_likes/min_repostsを使う。
+// API側で事前に足切りすることで、反応の弱い投稿を取得前に除外する。
+const MIN_LIKES = 10;
 
 type SearchedTweet = {
   id: string;
@@ -41,7 +46,7 @@ async function searchKeyword(
 ): Promise<SearchedTweet[]> {
   // id, text はAPI既定で返るが、created_at・public_metrics・author_id は
   // tweet.fields で明示しないと返らない
-  const result = await client.v2.search(`${keyword} -is:retweet`, {
+  const result = await client.v2.search(`${keyword} -is:retweet min_likes:${MIN_LIKES}`, {
     max_results: MAX_RESULTS,
     "tweet.fields": ["public_metrics", "created_at", "author_id"],
   });
