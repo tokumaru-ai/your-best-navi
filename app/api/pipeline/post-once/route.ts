@@ -4,6 +4,13 @@ import { GET as fetchRakutenPrices } from "../../rakuten/fetch/route";
 import { GET as generatePost } from "../../products/generate-post/route";
 import { GET as getScoredProducts } from "../../products/score/route";
 import { POST as postToX } from "../../x-post/route";
+import { GET as fetchTrendingPosts } from "../../x-trending/fetch/route";
+import { GET as extractTrendingProducts } from "../../x-trending/extract/route";
+import { GET as matchTrendingRakuten } from "../../x-trending/match-rakuten/route";
+import { GET as generateTrendingPost } from "../../x-trending/generate-post/route";
+
+// 実測42〜45秒に対する安全マージン。Hobbyプランの上限（300秒）内に収まる値。
+export const maxDuration = 120;
 
 type GeneratedProduct = {
   id: number;
@@ -24,6 +31,31 @@ type GeneratedPostResponse = {
   model: string;
   product: GeneratedProduct;
 };
+
+// x-trending/generate-post のレスポンス形。型はそちらのファイルからは import せず、
+// 既存の GeneratedProduct/GeneratedPostResponse と同様にこのファイル内で独立して定義する。
+type TrendingProduct = {
+  id: number;
+  trendingPostId: number;
+  name: string;
+  currentPrice: number | null;
+  reviewAverage: number | null;
+  reviewCount: number | null;
+  affiliateUrl: string | null;
+  imageUrl: string | null;
+  likeCount: number | null;
+  retweetCount: number | null;
+  reactionScore: number | null;
+};
+
+type TrendingGeneratedPostResponse = {
+  post: string;
+  checks: { length: number; endsWithPR: boolean; containsAffiliateUrl: boolean };
+  model: string;
+  product: TrendingProduct;
+};
+
+type PostSource = "trending" | "price_drop";
 
 type RunStatus = "success" | "skipped" | "failed";
 
@@ -70,6 +102,14 @@ async function upsertDedup(productId: number) {
       last_posted_at = now()
     `,
     [productId]
+  );
+}
+
+// Xトレンド経由で実際に投稿できた場合のみ、該当する x_trending_posts に印を付ける
+async function markTrendingPosted(trendingPostId: number) {
+  await getSql().query(
+    `UPDATE x_trending_posts SET posted_from_trending = true WHERE id = $1`,
+    [trendingPostId]
   );
 }
 
@@ -187,55 +227,133 @@ export async function GET(request: Request) {
       );
     }
 
-    // a. 値下げ率トップ1件の投稿文を生成する
-    const generateRes = await generatePost(internalRequest);
+    // 0.5 Xトレンド経路のデータを更新する（取得→商品名抽出→楽天マッチング）。
+    // いずれかが失敗しても、後段の値下げ経路へのフォールバックがあるため続行する。
+    const trendingRefreshSteps: {
+      label: string;
+      run: (req: Request) => Promise<Response>;
+    }[] = [
+      { label: "x-trending/fetch", run: fetchTrendingPosts },
+      { label: "x-trending/extract", run: extractTrendingProducts },
+      { label: "x-trending/match-rakuten", run: matchTrendingRakuten },
+    ];
 
-    if (generateRes.status === 404) {
-      const body = (await generateRes
-        .json()
-        .catch(() => ({ error: "値下げが検知された商品がありません" }))) as { error?: string };
-      outcome = { status: "skipped", detail: body.error ?? "値下げが検知された商品がありません" };
-      return NextResponse.json({ ...body, dryRun }, { status: 404 });
-    }
-
-    if (!generateRes.ok) {
-      const errorBody = (await generateRes.json().catch(() => ({}))) as {
-        error?: string;
-        product?: GeneratedProduct;
-      };
-      const errorMessage = errorBody.error ?? "投稿文の生成に失敗しました";
-
-      // エラー本文に商品情報が含まれない場合は score から改めて特定する
-      let productId = errorBody.product?.id;
-      if (productId === undefined) {
-        const scoreRes = await getScoredProducts(internalRequest);
-        if (scoreRes.ok) {
-          const scoreBody = (await scoreRes.json()) as { products: GeneratedProduct[] };
-          productId = scoreBody.products[0]?.id;
+    for (const step of trendingRefreshSteps) {
+      try {
+        const res = await step.run(internalRequest);
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          console.error(`[pipeline/post-once] ${step.label} failed: ${JSON.stringify(body)}`);
         }
+      } catch (error) {
+        console.error(
+          `[pipeline/post-once] ${step.label} threw: ${error instanceof Error ? error.message : String(error)}`
+        );
       }
-
-      if (productId !== undefined && !dryRun) {
-        await recordPost({
-          productId,
-          postText: "",
-          status: "failed",
-          errorMessage,
-        });
-      }
-
-      outcome = { status: "failed", detail: errorMessage, productId: productId ?? null };
-      return NextResponse.json({ error: errorMessage, dryRun }, { status: 500 });
     }
 
-    const { post, product, checks } = (await generateRes.json()) as GeneratedPostResponse;
+    // d. Xトレンド経由の投稿候補（反応数の閾値を超える商品）があるか確認する。
+    // 200以外（404を含む）は「Xトレンド経由の候補なし」として扱い、値下げ経路にフォールバックする。
+    let trendingPost: TrendingGeneratedPostResponse | null = null;
+    try {
+      const trendingRes = await generateTrendingPost(internalRequest);
+      if (trendingRes.ok) {
+        trendingPost = (await trendingRes.json()) as TrendingGeneratedPostResponse;
+      } else if (trendingRes.status !== 404) {
+        const body = await trendingRes.json().catch(() => ({}));
+        console.error(
+          `[pipeline/post-once] x-trending/generate-post failed: ${JSON.stringify(body)}`
+        );
+      }
+    } catch (error) {
+      console.error(
+        `[pipeline/post-once] x-trending/generate-post threw: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
 
-    // b. 24時間以内に投稿済みならスキップする（dry-run では検証を続けたいのでこのチェック自体を行わない）
+    let source: PostSource;
+    let post: string;
+    let product: GeneratedProduct | TrendingProduct;
+    let checks: { length: number; endsWithPR: boolean; containsAffiliateUrl: boolean };
+    let trendingPostId: number | undefined;
+
+    if (trendingPost) {
+      // Xトレンドで条件を満たす商品があれば、そちらを優先する
+      source = "trending";
+      post = trendingPost.post;
+      product = trendingPost.product;
+      checks = trendingPost.checks;
+      trendingPostId = trendingPost.product.trendingPostId;
+    } else {
+      source = "price_drop";
+
+      // a. 値下げ率トップ1件の投稿文を生成する（従来のロジックのまま）
+      const generateRes = await generatePost(internalRequest);
+
+      if (generateRes.status === 404) {
+        const body = (await generateRes
+          .json()
+          .catch(() => ({ error: "値下げが検知された商品がありません" }))) as { error?: string };
+        outcome = {
+          status: "skipped",
+          detail: `price_drop: ${body.error ?? "値下げが検知された商品がありません"}`,
+        };
+        return NextResponse.json({ ...body, dryRun }, { status: 404 });
+      }
+
+      if (!generateRes.ok) {
+        const errorBody = (await generateRes.json().catch(() => ({}))) as {
+          error?: string;
+          product?: GeneratedProduct;
+        };
+        const errorMessage = errorBody.error ?? "投稿文の生成に失敗しました";
+
+        // エラー本文に商品情報が含まれない場合は score から改めて特定する
+        let productId = errorBody.product?.id;
+        if (productId === undefined) {
+          const scoreRes = await getScoredProducts(internalRequest);
+          if (scoreRes.ok) {
+            const scoreBody = (await scoreRes.json()) as { products: GeneratedProduct[] };
+            productId = scoreBody.products[0]?.id;
+          }
+        }
+
+        if (productId !== undefined && !dryRun) {
+          await recordPost({
+            productId,
+            postText: "",
+            status: "failed",
+            errorMessage,
+          });
+        }
+
+        outcome = {
+          status: "failed",
+          detail: `price_drop: ${errorMessage}`,
+          productId: productId ?? null,
+        };
+        return NextResponse.json({ error: errorMessage, dryRun }, { status: 500 });
+      }
+
+      const generated = (await generateRes.json()) as GeneratedPostResponse;
+      post = generated.post;
+      product = generated.product;
+      checks = generated.checks;
+    }
+
+    // b. 24時間以内に投稿済みならスキップする（dry-run では検証を続けたいのでこのチェック自体を行わない）。
+    // Xトレンド経由も product.id（x_trending_posts.rakuten_product_id が指す products.id と同じ値）を
+    // そのまま使うことで、値下げ経由と同じ post_dedup の仕組みをそのまま流用する。
     if (!dryRun && (await isRecentlyPosted(product.id))) {
-      outcome = { status: "skipped", detail: "24時間以内に投稿済み", productId: product.id };
+      outcome = {
+        status: "skipped",
+        detail: `${source}: 24時間以内に投稿済み`,
+        productId: product.id,
+      };
       return NextResponse.json({
         skipped: true,
         reason: "24時間以内に投稿済み",
+        source,
       });
     }
 
@@ -245,12 +363,13 @@ export async function GET(request: Request) {
 
       outcome = {
         status: "success",
-        detail: "dry-run: 実際の投稿は行っていません",
+        detail: `${source}: dry-run: 実際の投稿は行っていません`,
         productId: product.id,
       };
       return NextResponse.json({
         dryRun: true,
         wouldPost: true,
+        source,
         product,
         post,
         checks,
@@ -288,7 +407,7 @@ export async function GET(request: Request) {
         status: "failed",
         errorMessage,
       });
-      outcome = { status: "failed", detail: errorMessage, productId: product.id };
+      outcome = { status: "failed", detail: `${source}: ${errorMessage}`, productId: product.id };
       return NextResponse.json({ error: errorMessage }, { status: 500 });
     }
 
@@ -301,9 +420,15 @@ export async function GET(request: Request) {
     // e. 投稿成功時のみ dedup を更新する
     await upsertDedup(product.id);
 
-    outcome = { status: "success", productId: product.id };
+    // Xトレンド経由で実際に投稿できた場合のみ、該当する x_trending_posts に印を付ける
+    if (source === "trending" && trendingPostId !== undefined) {
+      await markTrendingPosted(trendingPostId);
+    }
+
+    outcome = { status: "success", detail: source, productId: product.id };
     return NextResponse.json({
       posted: true,
+      source,
       product,
       post,
       tweet: xPostBody.tweet,
