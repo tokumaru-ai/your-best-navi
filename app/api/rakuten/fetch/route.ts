@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ensureSchema, getPool } from "@/lib/db";
+import { upsizeImage } from "@/lib/rakuten-image";
 
 // genreId は調査時点（GenreSearch API で実際に特定した値）のもの。
 // 楽天側でジャンル構成が変わることがあるため、値が合わなくなったら再調査する。
@@ -92,7 +93,9 @@ async function saveItems(category: string, items: RakutenItem[]): Promise<number
         [
           item.itemCode,
           item.itemName,
-          item.mediumImageUrls?.[0]?.imageUrl ?? null,
+          item.mediumImageUrls?.[0]?.imageUrl
+            ? upsizeImage(item.mediumImageUrls[0].imageUrl)
+            : null,
           item.itemUrl ?? null,
           item.affiliateUrl ?? null,
           category,

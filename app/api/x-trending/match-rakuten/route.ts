@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ensureSchema, getSql } from "@/lib/db";
+import { upsizeImage } from "@/lib/rakuten-image";
 
 const HITS = 1;
 // 楽天APIは1アプリあたり1リクエスト/秒の制限があるため、検索間で待つ（rakuten/fetchと同じ間隔）
@@ -117,12 +118,6 @@ async function classifyGenre(genreId: number): Promise<GenreClassification> {
 
   genreClassifyCache.set(genreId, classification);
   return classification;
-}
-
-// mediumImageUrls のURL末尾は "_ex=128x128" のサムネイル指定になっているため、
-// より大きいサイズを要求する（楽天のサムネイルCDNの挙動で、公式に文書化された仕様ではない）。
-function upsizeImage(url: string): string {
-  return url.replace(/_ex=\d+x\d+/, "_ex=600x600");
 }
 
 type PendingRow = {
