@@ -2,8 +2,12 @@ import { NextResponse } from "next/server";
 import { TwitterApi } from "twitter-api-v2";
 import { ensureSchema, getPool } from "@/lib/db";
 
-// 「買って良かった」は表記ゆれ（ひらがな/漢字）をORでまとめて拾う
-const KEYWORDS = ["神アイテム", "(買って良かった OR 買ってよかった)", "バズってる"];
+// Apple製品・周辺機器に絞り込む。表記ゆれ（スペース有無・カタカナ/英字）はORでまとめて拾う。
+const KEYWORDS = [
+  "(iPhoneケース OR iPhone ケース)",
+  "AirPods",
+  "(Apple Watch OR アップルウォッチ)",
+];
 const MAX_RESULTS = 20;
 // min_likes は X API の検索演算子（Standalone、recent search で利用可）。
 // Web検索のmin_faves/min_retweetsはAPIでは無効な名称のため、min_likes/min_repostsを使う。
