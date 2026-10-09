@@ -71,7 +71,9 @@ export async function GET(request: Request) {
     );
   }
 
-  // 値下げ率トップ1件は、score ルートのロジックをそのまま呼び出して取得する
+  // 値下げ商品の上位は、score ルートのロジックをそのまま呼び出して取得する。
+  // ?productId= が指定されればその商品を、なければ値下げ率トップ1件を使う
+  // （post-once は重複防止を通った商品を選び、productId を指定して呼び出す）。
   const scoreRes = await getScoredProducts(request);
   if (!scoreRes.ok) {
     return NextResponse.json(
@@ -80,11 +82,20 @@ export async function GET(request: Request) {
     );
   }
   const { products } = (await scoreRes.json()) as { products: ScoredProduct[] };
-  const product = products[0];
+  const productIdParam = new URL(request.url).searchParams.get("productId");
+  const product =
+    productIdParam !== null
+      ? products.find((p) => p.id === Number(productIdParam))
+      : products[0];
 
   if (!product) {
     return NextResponse.json(
-      { error: "値下げが検知された商品がありません" },
+      {
+        error:
+          productIdParam !== null
+            ? `productId=${productIdParam} は値下げ商品の上位に含まれていません`
+            : "値下げが検知された商品がありません",
+      },
       { status: 404 }
     );
   }

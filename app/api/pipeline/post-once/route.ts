@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ensureSchema, getSql } from "@/lib/db";
+import { getTrendingCandidates, type TrendingProduct } from "@/lib/trending-candidates";
 import { GET as fetchRakutenPrices } from "../../rakuten/fetch/route";
 import { GET as generatePost } from "../../products/generate-post/route";
 import { GET as getScoredProducts } from "../../products/score/route";
@@ -32,22 +33,7 @@ type GeneratedPostResponse = {
   product: GeneratedProduct;
 };
 
-// x-trending/generate-post のレスポンス形。型はそちらのファイルからは import せず、
-// 既存の GeneratedProduct/GeneratedPostResponse と同様にこのファイル内で独立して定義する。
-type TrendingProduct = {
-  id: number;
-  trendingPostId: number;
-  name: string;
-  currentPrice: number | null;
-  reviewAverage: number | null;
-  reviewCount: number | null;
-  affiliateUrl: string | null;
-  imageUrl: string | null;
-  likeCount: number | null;
-  retweetCount: number | null;
-  reactionScore: number | null;
-};
-
+// x-trending/generate-post のレスポンス形。商品の型は候補一覧と共通のものを lib から使う。
 type TrendingGeneratedPostResponse = {
   post: string;
   checks: { length: number; endsWithPR: boolean; containsAffiliateUrl: boolean };
@@ -82,15 +68,25 @@ async function recordPost(params: {
   );
 }
 
-async function isRecentlyPosted(productId: number): Promise<boolean> {
+// 同じ商品を再投稿しない期間
+const DEDUP_DAYS = 14;
+
+// 候補を上位から順に見て、DEDUP_DAYS 日以内に投稿していない最初の商品IDを返す。
+// すべて投稿済み（または候補なし）なら undefined。
+async function pickFirstNotRecentlyPosted(
+  productIds: number[]
+): Promise<number | undefined> {
+  if (productIds.length === 0) return undefined;
   const rows = (await getSql().query(
     `
-    SELECT 1 FROM post_dedup
-    WHERE product_id = $1 AND last_posted_at > now() - interval '24 hours'
+    SELECT product_id FROM post_dedup
+    WHERE product_id = ANY($1::int[])
+      AND last_posted_at > now() - make_interval(days => $2)
     `,
-    [productId]
-  )) as unknown[];
-  return rows.length > 0;
+    [productIds, DEDUP_DAYS]
+  )) as { product_id: number }[];
+  const recentlyPosted = new Set(rows.map((row) => row.product_id));
+  return productIds.find((id) => !recentlyPosted.has(id));
 }
 
 async function upsertDedup(productId: number) {
@@ -105,12 +101,23 @@ async function upsertDedup(productId: number) {
   );
 }
 
-// Xトレンド経由で実際に投稿できた場合のみ、該当する x_trending_posts に印を付ける
-async function markTrendingPosted(trendingPostId: number) {
+// Xトレンド経由で実際に投稿できた場合のみ、その商品にマッチした未使用の x_trending_posts すべてに印を付ける。
+// 候補は商品単位で集約しているため、代表の1行だけに印を付けると、残りの行から同じ商品が再び候補に上がる。
+async function markTrendingPosted(productId: number) {
   await getSql().query(
-    `UPDATE x_trending_posts SET posted_from_trending = true WHERE id = $1`,
-    [trendingPostId]
+    `
+    UPDATE x_trending_posts SET posted_from_trending = true
+    WHERE rakuten_product_id = $1 AND posted_from_trending = false
+    `,
+    [productId]
   );
+}
+
+// 下流の generate-post に、選んだ商品を ?productId= で指定するためのリクエストを作る
+function withProductId(base: Request, productId: number): Request {
+  const url = new URL(base.url);
+  url.searchParams.set("productId", String(productId));
+  return new Request(url, { headers: base.headers });
 }
 
 // cron_runs: 開始時に running で1行作り、終了時に必ず更新する。
@@ -252,22 +259,31 @@ export async function GET(request: Request) {
       }
     }
 
-    // d. Xトレンド経由の投稿候補（反応数の閾値を超える商品）があるか確認する。
-    // 200以外（404を含む）は「Xトレンド経由の候補なし」として扱い、値下げ経路にフォールバックする。
+    // d. Xトレンド経由の投稿候補（商品単位で集約した反応数上位）を上から順に見て、
+    // DEDUP_DAYS 日以内に投稿していない最初の商品を選ぶ。dry-run でも同じ選び方をする（読み取りのみ）。
+    // 候補なし・全件投稿済み・生成失敗のいずれでも、値下げ経路にフォールバックする。
     let trendingPost: TrendingGeneratedPostResponse | null = null;
     try {
-      const trendingRes = await generateTrendingPost(internalRequest);
-      if (trendingRes.ok) {
-        trendingPost = (await trendingRes.json()) as TrendingGeneratedPostResponse;
-      } else if (trendingRes.status !== 404) {
-        const body = await trendingRes.json().catch(() => ({}));
-        console.error(
-          `[pipeline/post-once] x-trending/generate-post failed: ${JSON.stringify(body)}`
+      const candidates = await getTrendingCandidates();
+      const productId = await pickFirstNotRecentlyPosted(candidates.map((c) => c.id));
+      if (productId !== undefined) {
+        const trendingRes = await generateTrendingPost(withProductId(internalRequest, productId));
+        if (trendingRes.ok) {
+          trendingPost = (await trendingRes.json()) as TrendingGeneratedPostResponse;
+        } else {
+          const body = await trendingRes.json().catch(() => ({}));
+          console.error(
+            `[pipeline/post-once] x-trending/generate-post failed: ${JSON.stringify(body)}`
+          );
+        }
+      } else if (candidates.length > 0) {
+        console.log(
+          `[pipeline/post-once] Xトレンド候補${candidates.length}件はすべて${DEDUP_DAYS}日以内に投稿済みのため、値下げ経路へフォールバック`
         );
       }
     } catch (error) {
       console.error(
-        `[pipeline/post-once] x-trending/generate-post threw: ${error instanceof Error ? error.message : String(error)}`
+        `[pipeline/post-once] x-trending candidate selection threw: ${error instanceof Error ? error.message : String(error)}`
       );
     }
 
@@ -275,7 +291,6 @@ export async function GET(request: Request) {
     let post: string;
     let product: GeneratedProduct | TrendingProduct;
     let checks: { length: number; endsWithPR: boolean; containsAffiliateUrl: boolean };
-    let trendingPostId: number | undefined;
 
     if (trendingPost) {
       // Xトレンドで条件を満たす商品があれば、そちらを優先する
@@ -283,42 +298,42 @@ export async function GET(request: Request) {
       post = trendingPost.post;
       product = trendingPost.product;
       checks = trendingPost.checks;
-      trendingPostId = trendingPost.product.trendingPostId;
     } else {
       source = "price_drop";
 
-      // a. 値下げ率トップ1件の投稿文を生成する（従来のロジックのまま）
-      const generateRes = await generatePost(internalRequest);
+      // a. 値下げ率の上位を上から順に見て、DEDUP_DAYS 日以内に投稿していない最初の商品を選ぶ
+      const scoreRes = await getScoredProducts(internalRequest);
+      if (!scoreRes.ok) {
+        outcome = { status: "failed", detail: "price_drop: 値下げ商品の取得に失敗しました" };
+        return NextResponse.json(
+          { error: "値下げ商品の取得に失敗しました", dryRun },
+          { status: 500 }
+        );
+      }
+      const { products: scored } = (await scoreRes.json()) as { products: GeneratedProduct[] };
 
-      if (generateRes.status === 404) {
-        const body = (await generateRes
-          .json()
-          .catch(() => ({ error: "値下げが検知された商品がありません" }))) as { error?: string };
-        outcome = {
-          status: "skipped",
-          detail: `price_drop: ${body.error ?? "値下げが検知された商品がありません"}`,
-        };
-        return NextResponse.json({ ...body, dryRun }, { status: 404 });
+      if (scored.length === 0) {
+        outcome = { status: "skipped", detail: "price_drop: 値下げが検知された商品がありません" };
+        return NextResponse.json(
+          { error: "値下げが検知された商品がありません", dryRun },
+          { status: 404 }
+        );
       }
 
+      const productId = await pickFirstNotRecentlyPosted(scored.map((p) => p.id));
+      if (productId === undefined) {
+        const reason = `値下げ商品の上位${scored.length}件すべてが${DEDUP_DAYS}日以内に投稿済み`;
+        outcome = { status: "skipped", detail: `price_drop: ${reason}` };
+        return NextResponse.json({ skipped: true, reason, source, dryRun });
+      }
+
+      const generateRes = await generatePost(withProductId(internalRequest, productId));
+
       if (!generateRes.ok) {
-        const errorBody = (await generateRes.json().catch(() => ({}))) as {
-          error?: string;
-          product?: GeneratedProduct;
-        };
+        const errorBody = (await generateRes.json().catch(() => ({}))) as { error?: string };
         const errorMessage = errorBody.error ?? "投稿文の生成に失敗しました";
 
-        // エラー本文に商品情報が含まれない場合は score から改めて特定する
-        let productId = errorBody.product?.id;
-        if (productId === undefined) {
-          const scoreRes = await getScoredProducts(internalRequest);
-          if (scoreRes.ok) {
-            const scoreBody = (await scoreRes.json()) as { products: GeneratedProduct[] };
-            productId = scoreBody.products[0]?.id;
-          }
-        }
-
-        if (productId !== undefined && !dryRun) {
+        if (!dryRun) {
           await recordPost({
             productId,
             postText: "",
@@ -327,11 +342,7 @@ export async function GET(request: Request) {
           });
         }
 
-        outcome = {
-          status: "failed",
-          detail: `price_drop: ${errorMessage}`,
-          productId: productId ?? null,
-        };
+        outcome = { status: "failed", detail: `price_drop: ${errorMessage}`, productId };
         return NextResponse.json({ error: errorMessage, dryRun }, { status: 500 });
       }
 
@@ -339,22 +350,6 @@ export async function GET(request: Request) {
       post = generated.post;
       product = generated.product;
       checks = generated.checks;
-    }
-
-    // b. 24時間以内に投稿済みならスキップする（dry-run では検証を続けたいのでこのチェック自体を行わない）。
-    // Xトレンド経由も product.id（x_trending_posts.rakuten_product_id が指す products.id と同じ値）を
-    // そのまま使うことで、値下げ経由と同じ post_dedup の仕組みをそのまま流用する。
-    if (!dryRun && (await isRecentlyPosted(product.id))) {
-      outcome = {
-        status: "skipped",
-        detail: `${source}: 24時間以内に投稿済み`,
-        productId: product.id,
-      };
-      return NextResponse.json({
-        skipped: true,
-        reason: "24時間以内に投稿済み",
-        source,
-      });
     }
 
     if (dryRun) {
@@ -421,8 +416,8 @@ export async function GET(request: Request) {
     await upsertDedup(product.id);
 
     // Xトレンド経由で実際に投稿できた場合のみ、該当する x_trending_posts に印を付ける
-    if (source === "trending" && trendingPostId !== undefined) {
-      await markTrendingPosted(trendingPostId);
+    if (source === "trending") {
+      await markTrendingPosted(product.id);
     }
 
     outcome = { status: "success", detail: source, productId: product.id };

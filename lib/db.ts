@@ -15,6 +15,10 @@ CREATE TABLE IF NOT EXISTS products (
   UNIQUE (source, external_id)
 );
 
+-- 楽天APIの genreId（末端の子ジャンル）。本体ジャンルの商品を投稿候補で優先するために使う。
+-- products は本列追加より前にデプロイ済みのため、IF NOT EXISTS で既存環境に retrofit する。
+ALTER TABLE products ADD COLUMN IF NOT EXISTS genre_id INTEGER;
+
 CREATE TABLE IF NOT EXISTS price_history (
   id             SERIAL PRIMARY KEY,
   product_id     INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,

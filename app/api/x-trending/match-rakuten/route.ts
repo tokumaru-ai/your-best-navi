@@ -202,15 +202,16 @@ async function upsertProduct(item: RakutenItem): Promise<number> {
   const rows = (await getSql().query(
     `
     INSERT INTO products
-      (source, external_id, name, image_url, item_url, affiliate_url, category)
+      (source, external_id, name, image_url, item_url, affiliate_url, category, genre_id)
     VALUES
-      ('rakuten', $1, $2, $3, $4, $5, 'Xトレンド')
+      ('rakuten', $1, $2, $3, $4, $5, 'Xトレンド', $6)
     ON CONFLICT (source, external_id) DO UPDATE SET
       name          = excluded.name,
       image_url     = excluded.image_url,
       item_url      = excluded.item_url,
       affiliate_url = excluded.affiliate_url,
       category      = excluded.category,
+      genre_id      = COALESCE(excluded.genre_id, products.genre_id),
       updated_at    = now()
     RETURNING id
     `,
@@ -222,6 +223,7 @@ async function upsertProduct(item: RakutenItem): Promise<number> {
         : null,
       item.itemUrl ?? null,
       item.affiliateUrl ?? null,
+      item.genreId ?? null,
     ]
   )) as { id: number }[];
 

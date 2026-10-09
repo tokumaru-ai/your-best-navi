@@ -24,6 +24,8 @@ type RakutenItem = {
   reviewCount?: number;
   reviewAverage?: number;
   rank?: number;
+  // ランキングAPIは genreId を文字列で返す（商品検索APIは数値）
+  genreId?: number | string;
 };
 
 type GenreResult = {
@@ -78,15 +80,16 @@ async function saveItems(category: string, items: RakutenItem[]): Promise<number
       const { rows } = await client.query(
         `
         INSERT INTO products
-          (source, external_id, name, image_url, item_url, affiliate_url, category)
+          (source, external_id, name, image_url, item_url, affiliate_url, category, genre_id)
         VALUES
-          ('rakuten', $1, $2, $3, $4, $5, $6)
+          ('rakuten', $1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (source, external_id) DO UPDATE SET
           name          = excluded.name,
           image_url     = excluded.image_url,
           item_url      = excluded.item_url,
           affiliate_url = excluded.affiliate_url,
           category      = excluded.category,
+          genre_id      = COALESCE(excluded.genre_id, products.genre_id),
           updated_at    = now()
         RETURNING id
         `,
@@ -99,6 +102,7 @@ async function saveItems(category: string, items: RakutenItem[]): Promise<number
           item.itemUrl ?? null,
           item.affiliateUrl ?? null,
           category,
+          item.genreId !== undefined && item.genreId !== "" ? Number(item.genreId) : null,
         ]
       );
       const productId = rows[0].id as number;
