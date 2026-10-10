@@ -1,4 +1,5 @@
 import { getSql } from "@/lib/db";
+import { mainUnitReasonSql, type MainUnitReason } from "@/lib/main-unit";
 
 // これ未満の反応数（いいね+リポスト*2+リプライ+引用*2）の投稿は、
 // 「話題になっている」根拠として弱いため、投稿対象として選ばない
@@ -19,6 +20,8 @@ export type TrendingProduct = {
   likeCount: number | null;
   retweetCount: number | null;
   reactionScore: number | null;
+  // 本体と判定された理由。本体でなければ null
+  mainUnitReason: MainUnitReason | null;
 };
 
 // pg は NUMERIC 列を精度保持のため文字列で返す（INTEGER/REALとは違い自動で number にならない）
@@ -34,11 +37,12 @@ type CandidateRow = {
   name: string;
   affiliate_url: string | null;
   image_url: string | null;
+  main_unit_reason: MainUnitReason | null;
 };
 
 // 楽天でマッチ済みかつ、まだXトレンド発の投稿に使われていない行を商品（rakuten_product_id）単位で集約し、
-// 各商品で反応数が最大の行を代表として、反応数の高い順に上位 TRENDING_CANDIDATE_LIMIT 件を返す。
-// 同じ商品に複数のバズ投稿がマッチしていても、候補としては1件にまとめる。
+// 各商品で反応数が最大の行を代表として、「本体 > それ以外」、同じ区分の中では反応数の高い順に並べ、
+// 上位 TRENDING_CANDIDATE_LIMIT 件を返す。同じ商品に複数のバズ投稿がマッチしていても、候補としては1件にまとめる。
 export async function getTrendingCandidates(): Promise<TrendingProduct[]> {
   const rows = (await getSql().query(
     `
@@ -47,7 +51,8 @@ export async function getTrendingCandidates(): Promise<TrendingProduct[]> {
         t.id AS trending_post_id,
         t.like_count, t.retweet_count, t.reaction_score,
         t.current_price, t.review_average, t.review_count,
-        p.id AS product_id, p.name, p.affiliate_url, p.image_url
+        p.id AS product_id, p.name, p.affiliate_url, p.image_url,
+        ${mainUnitReasonSql("p")} AS main_unit_reason
       FROM x_trending_posts t
       JOIN products p ON p.id = t.rakuten_product_id
       WHERE t.rakuten_product_id IS NOT NULL
@@ -55,7 +60,7 @@ export async function getTrendingCandidates(): Promise<TrendingProduct[]> {
         AND t.reaction_score >= $1
       ORDER BY t.rakuten_product_id, t.reaction_score DESC, t.id ASC
     ) per_product
-    ORDER BY reaction_score DESC NULLS LAST, product_id ASC
+    ORDER BY (main_unit_reason IS NOT NULL) DESC, reaction_score DESC NULLS LAST, product_id ASC
     LIMIT $2
     `,
     [MIN_REACTION_SCORE, TRENDING_CANDIDATE_LIMIT]
@@ -73,5 +78,6 @@ export async function getTrendingCandidates(): Promise<TrendingProduct[]> {
     likeCount: row.like_count,
     retweetCount: row.retweet_count,
     reactionScore: row.reaction_score,
+    mainUnitReason: row.main_unit_reason,
   }));
 }

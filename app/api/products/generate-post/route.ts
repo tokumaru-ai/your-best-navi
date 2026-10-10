@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { GET as getScoredProducts } from "../score/route";
+import type { MainUnitReason } from "@/lib/main-unit";
 
 const MODEL = "claude-haiku-4-5-20251001";
 
@@ -15,6 +16,7 @@ type ScoredProduct = {
   reviewCount: number | null;
   affiliateUrl: string | null;
   imageUrl: string | null;
+  mainUnitReason: MainUnitReason | null;
 };
 
 const SYSTEM_PROMPT = `あなたは、値下げされた商品をX（旧Twitter）で紹介する投稿文を書くアシスタントです。

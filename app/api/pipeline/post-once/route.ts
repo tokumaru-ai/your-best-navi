@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ensureSchema, getSql } from "@/lib/db";
 import { getTrendingCandidates, type TrendingProduct } from "@/lib/trending-candidates";
+import type { MainUnitReason } from "@/lib/main-unit";
 import { GET as fetchRakutenPrices } from "../../rakuten/fetch/route";
 import { GET as generatePost } from "../../products/generate-post/route";
 import { GET as getScoredProducts } from "../../products/score/route";
@@ -24,6 +25,7 @@ type GeneratedProduct = {
   reviewCount: number | null;
   affiliateUrl: string | null;
   imageUrl: string | null;
+  mainUnitReason: MainUnitReason | null;
 };
 
 type GeneratedPostResponse = {
@@ -111,6 +113,21 @@ async function markTrendingPosted(productId: number) {
     `,
     [productId]
   );
+}
+
+// X検索（x-trending/fetch）は従量課金のため、前回の取得からこの時間がたつまで実行しない（実質2日に1回）
+const TRENDING_FETCH_INTERVAL_HOURS = 40;
+
+// x_trending_posts の最新の fetched_at からの経過時間（時間）。1件もなければ null。
+async function hoursSinceLastTrendingFetch(): Promise<number | null> {
+  const rows = (await getSql().query(
+    `
+    SELECT EXTRACT(EPOCH FROM (now() - MAX(fetched_at))) / 3600 AS hours
+    FROM x_trending_posts
+    `
+  )) as { hours: string | number | null }[];
+  const hours = rows[0]?.hours;
+  return hours === null || hours === undefined ? null : Number(hours);
 }
 
 // 下流の generate-post に、選んだ商品を ?productId= で指定するためのリクエストを作る
@@ -219,6 +236,8 @@ export async function GET(request: Request) {
     status: "failed",
     detail: "ハンドラが outcome を設定せずに終了しました（想定外のパス）",
   };
+  // X検索を実行したかスキップしたかを、cron_runs の detail に併記する
+  let trendingFetchNote: string | null = null;
 
   try {
     // 0. まず楽天の最新価格を取得・保存する。失敗しても値下げ検知・投稿処理は続行する
@@ -236,11 +255,33 @@ export async function GET(request: Request) {
 
     // 0.5 Xトレンド経路のデータを更新する（取得→商品名抽出→楽天マッチング）。
     // いずれかが失敗しても、後段の値下げ経路へのフォールバックがあるため続行する。
+    // 取得（X検索）は前回から TRENDING_FETCH_INTERVAL_HOURS 時間以上たった場合のみ行う。
+    // 抽出・マッチングは未処理分を処理するため毎回実行する。
+    let runTrendingFetch = true;
+    try {
+      const hours = await hoursSinceLastTrendingFetch();
+      if (hours === null) {
+        trendingFetchNote = "x-search: 実行（取得履歴なし）";
+      } else if (hours >= TRENDING_FETCH_INTERVAL_HOURS) {
+        trendingFetchNote = `x-search: 実行（前回から${hours.toFixed(1)}時間）`;
+      } else {
+        runTrendingFetch = false;
+        trendingFetchNote = `x-search: スキップ（前回から${hours.toFixed(1)}時間 < ${TRENDING_FETCH_INTERVAL_HOURS}時間）`;
+      }
+    } catch (error) {
+      // 経過時間を確認できない場合は、従来どおり検索を実行する
+      trendingFetchNote = "x-search: 実行（前回取得時刻の確認に失敗）";
+      console.error(
+        `[pipeline/post-once] last trending fetch check threw: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    console.log(`[pipeline/post-once] ${trendingFetchNote}`);
+
     const trendingRefreshSteps: {
       label: string;
       run: (req: Request) => Promise<Response>;
     }[] = [
-      { label: "x-trending/fetch", run: fetchTrendingPosts },
+      ...(runTrendingFetch ? [{ label: "x-trending/fetch", run: fetchTrendingPosts }] : []),
       { label: "x-trending/extract", run: extractTrendingProducts },
       { label: "x-trending/match-rakuten", run: matchTrendingRakuten },
     ];
@@ -364,6 +405,7 @@ export async function GET(request: Request) {
       return NextResponse.json({
         dryRun: true,
         wouldPost: true,
+        trendingFetch: trendingFetchNote,
         source,
         product,
         post,
@@ -434,7 +476,8 @@ export async function GET(request: Request) {
     outcome = { status: "failed", detail: message };
     return NextResponse.json({ error: "内部エラーが発生しました" }, { status: 500 });
   } finally {
-    await finishRun(runId, outcome.status, outcome.detail, outcome.productId).catch((error) => {
+    const detail = [outcome.detail, trendingFetchNote].filter(Boolean).join(" / ") || null;
+    await finishRun(runId, outcome.status, detail, outcome.productId).catch((error) => {
       console.error(
         `[pipeline/post-once] failed to update cron_runs (id=${runId}): ${
           error instanceof Error ? error.message : String(error)

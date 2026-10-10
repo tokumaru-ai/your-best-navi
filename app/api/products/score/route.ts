@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 import { ensureSchema, getSql } from "@/lib/db";
+import { mainUnitReasonSql, type MainUnitReason } from "@/lib/main-unit";
 
 const LIMIT = 10;
 
 // 各商品の price_history から直近2回分（rn = 1 が今回、rn = 2 が前回）を取り出し、
 // 値下げ額・値下げ率を計算する。履歴が1回分しかない商品は JOIN で落ちる。
-// 値下げ額が0以下の商品は除外し、値下げ率の高い順に並べる。
+// 値下げ額が0以下の商品は除外し、「本体 > それ以外」、同じ区分の中では値下げ率の高い順に並べる。
 const SCORE_QUERY = `
 WITH ranked AS (
   SELECT
@@ -29,12 +30,13 @@ SELECT
   cur.review_count                                        AS "reviewCount",
   p.affiliate_url                                         AS "affiliateUrl",
   p.image_url                                             AS "imageUrl",
+  ${mainUnitReasonSql("p")}                               AS "mainUnitReason",
   COUNT(*) OVER ()                                        AS "totalFound"
 FROM products p
 JOIN ranked cur  ON cur.product_id  = p.id AND cur.rn  = 1
 JOIN ranked prev ON prev.product_id = p.id AND prev.rn = 2
 WHERE prev.price - cur.price > 0
-ORDER BY (prev.price - cur.price) * 1.0 / prev.price DESC, "dropAmount" DESC, p.id ASC
+ORDER BY ("mainUnitReason" IS NOT NULL) DESC, (prev.price - cur.price) * 1.0 / prev.price DESC, "dropAmount" DESC, p.id ASC
 LIMIT ${LIMIT}
 `;
 
@@ -49,6 +51,7 @@ type ScoredRow = {
   reviewCount: number | null;
   affiliateUrl: string | null;
   imageUrl: string | null;
+  mainUnitReason: MainUnitReason | null;
   totalFound: number;
 };
 
@@ -76,6 +79,7 @@ export async function GET(request: Request) {
       reviewCount: row.reviewCount,
       affiliateUrl: row.affiliateUrl,
       imageUrl: row.imageUrl,
+      mainUnitReason: row.mainUnitReason,
     })),
   });
 }
