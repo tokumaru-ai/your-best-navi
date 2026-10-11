@@ -11,6 +11,17 @@ const GENRES = [
   { genreId: 509433, category: "モバイルバッテリー・充電器" },
 ];
 const HITS = 10;
+
+// 店単位の取得。楽天モバイル公式 楽天市場店の Apple 製品を、shopCode を指定してキーワード検索する
+const SHOP = {
+  shopCode: "rakutenmobile-store",
+  category: "楽天モバイル",
+  keywords: ["iPhone", "AirPods", "Apple Watch"],
+  pages: 2,
+};
+const SHOP_SEARCH_HITS = 30;
+const SHOP_ITEM_NAME_PATTERN = /iPhone|iPad|AirPods|Apple Watch|Apple/i;
+const SHOP_ITEM_EXCLUDE_PATTERN = /中古|訳あり/;
 // 楽天APIは1アプリあたり1リクエスト/秒の制限があるため、ジャンル間で待つ
 const INTERVAL_MS = 1100;
 
@@ -19,6 +30,7 @@ type RakutenItem = {
   itemName: string;
   itemPrice: number;
   itemUrl?: string;
+  shopCode?: string;
   affiliateUrl?: string;
   mediumImageUrls?: { imageUrl: string }[];
   reviewCount?: number;
@@ -26,6 +38,12 @@ type RakutenItem = {
   rank?: number;
   // ランキングAPIは genreId を文字列で返す（商品検索APIは数値）
   genreId?: number | string;
+};
+
+type KeywordResult = {
+  keyword: string;
+  found: number;
+  error?: string;
 };
 
 type GenreResult = {
@@ -69,7 +87,54 @@ async function fetchRanking(genreId: number): Promise<RakutenItem[]> {
   return data.Items.map((entry: { Item: RakutenItem }) => entry.Item).slice(0, HITS);
 }
 
-async function saveItems(category: string, items: RakutenItem[]): Promise<number> {
+async function searchItems(keyword: string, page: number): Promise<RakutenItem[]> {
+  const appId = process.env.RAKUTEN_APP_ID;
+  const accessKey = process.env.RAKUTEN_ACCESS_KEY;
+  const affiliateId = process.env.RAKUTEN_AFFILIATE_ID;
+  const origin = process.env.RAKUTEN_ORIGIN ?? "";
+
+  const url =
+    `https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20260701` +
+    `?applicationId=${appId}` +
+    `&accessKey=${accessKey}` +
+    `&affiliateId=${affiliateId}` +
+    `&shopCode=${SHOP.shopCode}` +
+    `&keyword=${encodeURIComponent(keyword)}` +
+    `&hits=${SHOP_SEARCH_HITS}` +
+    `&page=${page}`;
+
+  const res = await fetch(url, {
+    headers: {
+      Origin: origin,
+    },
+  });
+  const data = await res.json();
+
+  if (!res.ok || data.errors || !Array.isArray(data.Items)) {
+    // URL にキーが含まれるので、エラー本文だけを使う
+    const detail = data.errors
+      ? `${data.errors.errorCode} ${data.errors.errorMessage}`
+      : data.error_description ?? "unexpected response";
+    throw new Error(`Rakuten API error (HTTP ${res.status}): ${detail}`);
+  }
+
+  return data.Items.map((entry: { Item: RakutenItem }) => entry.Item);
+}
+
+function isShopTarget(item: RakutenItem): boolean {
+  return (
+    item.shopCode === SHOP.shopCode &&
+    SHOP_ITEM_NAME_PATTERN.test(item.itemName) &&
+    !SHOP_ITEM_EXCLUDE_PATTERN.test(item.itemName)
+  );
+}
+
+// keepCategory が true のときは、すでにある商品の category を変えない（新規の商品にだけ category を付ける）
+async function saveItems(
+  category: string,
+  items: RakutenItem[],
+  { keepCategory = false }: { keepCategory?: boolean } = {}
+): Promise<number> {
   const client = await getPool().connect();
 
   // ジャンル単位で1トランザクション。途中で失敗したらそのジャンル分は保存しない
@@ -88,7 +153,7 @@ async function saveItems(category: string, items: RakutenItem[]): Promise<number
           image_url     = excluded.image_url,
           item_url      = excluded.item_url,
           affiliate_url = excluded.affiliate_url,
-          category      = excluded.category,
+          category      = CASE WHEN $8 THEN products.category ELSE excluded.category END,
           genre_id      = COALESCE(excluded.genre_id, products.genre_id),
           updated_at    = now()
         RETURNING id
@@ -103,6 +168,7 @@ async function saveItems(category: string, items: RakutenItem[]): Promise<number
           item.affiliateUrl ?? null,
           category,
           item.genreId !== undefined && item.genreId !== "" ? Number(item.genreId) : null,
+          keepCategory,
         ]
       );
       const productId = rows[0].id as number;
@@ -165,9 +231,54 @@ export async function GET(request: Request) {
     }
   }
 
+  // 店単位の取得。キーワード間で同じ商品が重複するため itemCode でまとめてから1回で保存する
+  const shopItems = new Map<string, RakutenItem>();
+  const keywordResults: KeywordResult[] = [];
+
+  for (const keyword of SHOP.keywords) {
+    let found = 0;
+    try {
+      for (let page = 1; page <= SHOP.pages; page++) {
+        await sleep(INTERVAL_MS);
+        const items = await searchItems(keyword, page);
+        for (const item of items.filter(isShopTarget)) {
+          shopItems.set(item.itemCode, item);
+          found++;
+        }
+        if (items.length < SHOP_SEARCH_HITS) break;
+      }
+      keywordResults.push({ keyword, found });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[rakuten/fetch] shop=${SHOP.shopCode} keyword="${keyword}" failed: ${message}`);
+      keywordResults.push({ keyword, found, error: message });
+    }
+  }
+
+  let shopSaved = 0;
+  let shopError: string | undefined;
+  try {
+    shopSaved = await saveItems(SHOP.category, [...shopItems.values()], {
+      keepCategory: true,
+    });
+  } catch (error) {
+    shopError = error instanceof Error ? error.message : String(error);
+    console.error(`[rakuten/fetch] shop=${SHOP.shopCode} save failed: ${shopError}`);
+  }
+
   return NextResponse.json({
-    saved: results.reduce((sum, r) => sum + r.saved, 0),
-    errors: results.filter((r) => r.error).length,
+    saved: results.reduce((sum, r) => sum + r.saved, 0) + shopSaved,
+    errors:
+      results.filter((r) => r.error).length +
+      keywordResults.filter((r) => r.error).length +
+      (shopError ? 1 : 0),
     results,
+    shop: {
+      shopCode: SHOP.shopCode,
+      category: SHOP.category,
+      saved: shopSaved,
+      ...(shopError ? { error: shopError } : {}),
+      keywords: keywordResults,
+    },
   });
 }

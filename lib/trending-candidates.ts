@@ -1,3 +1,4 @@
+import { candidateFilterSql } from "@/lib/candidate-filter";
 import { getSql } from "@/lib/db";
 import { mainUnitReasonSql, type MainUnitReason } from "@/lib/main-unit";
 
@@ -58,6 +59,7 @@ export async function getTrendingCandidates(): Promise<TrendingProduct[]> {
       WHERE t.rakuten_product_id IS NOT NULL
         AND t.posted_from_trending = false
         AND t.reaction_score >= $1
+        AND ${candidateFilterSql("p")}
       ORDER BY t.rakuten_product_id, t.reaction_score DESC, t.id ASC
     ) per_product
     ORDER BY (main_unit_reason IS NOT NULL) DESC, reaction_score DESC NULLS LAST, product_id ASC
