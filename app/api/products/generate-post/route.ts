@@ -1,9 +1,6 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { GET as getScoredProducts } from "../score/route";
 import type { MainUnitReason } from "@/lib/main-unit";
-
-const MODEL = "claude-haiku-4-5-20251001";
 
 type ScoredProduct = {
   id: number;
@@ -19,58 +16,95 @@ type ScoredProduct = {
   mainUnitReason: MainUnitReason | null;
 };
 
-const SYSTEM_PROMPT = `あなたは、値下げされた商品をX（旧Twitter）で紹介する投稿文を書くアシスタントです。
-渡された商品データをもとに、投稿文を1つだけ作成してください。
+// 投稿文は生成AIを使わず、取得した実データ（価格・前回価格・レビュー）だけからテンプレートで組み立てる。
+// 「Xで話題」「人気」など、取得していない根拠が文中に入らないようにするため。
 
-# データの扱い（最重要）
-- 商品名・現在価格・値下げ額・値下げ率・レビュー評価・レビュー件数は、必ず渡されたデータの値をそのまま使うこと。計算し直したり、丸めたり、言い換えたりしない。
-- 渡されていない情報は書かない。在庫、セール期間、最安値、ランキング、スペック、口コミの内容などを推測で補わない。
-- 商品名が長い場合は、渡された名前の先頭から意味の切れ目までを、書き換えずにそのまま抜粋してよい。名前に含まれるクーポン価格・割引額などの宣伝文句は、渡された価格データと食い違うため使わない。
+// 投稿に載せる商品名の上限文字数。楽天の商品名は検索用キーワードが長く続くため、先頭だけを使う。
+// 状態を示す括弧（【国内正規品/新品】など）を残すため、本体名が切れないよう長めにしている。
+const NAME_MAX_LENGTH = 60;
+// 空白で切るとき、これより短くなる場合は空白を待たずに文字数で切る
+const NAME_MIN_CUT_LENGTH = 15;
 
-# 禁止する表現
-- 実際に使った体験を装う表現は禁止する。例:「使ってる」「愛用してる」「使ってみた」「買ってよかった」「おすすめ」といった断定的な推奨や体験談。
-- 発見・共有のトーンで書くこと。例:「気になってた」「レビュー評価が高い」「値下げしてるっぽい」「チェックしてみて」。
+// 括弧で囲まれた部分のうち、販売条件（送料・ポイント・発送日・クーポンなど）や、
+// こちらで確かめていない宣伝文句（楽天1位・ランキングなど）を書いたものを取り除く。
+// 状態を示す語（新品・未開封・正規品など）を含む括弧や、どちらか判断できない括弧は残す。
+const BRACKETED_SEGMENT = /【[^】]*】|［[^］]*］|\[[^\]]*\]|《[^》]*》|≪[^≫]*≫|＜[^＞]*＞/g;
+// 「マルチポイント接続」などの仕様をポイント還元と取り違えないよう、ポイントだけは直前の語を見る
+const SALES_CONDITION_PATTERNS = [
+  /楽天[1１]位|ランキング/,
+  /お買い物マラソン|マラソン|お買い物/,
+  /(?<!マルチ)ポイント|倍/,
+  /最短|翌日|即日|発送|出荷|土日|祝日/,
+  /送料無料|送料込/,
+  /受取|受け取り|転送不可|本人確認|キャンセル|同梱/,
+  /再入荷|在庫/,
+  /クーポン|OFF|割引|半額|円/i,
+  /期間|限定|まで/,
+  /セール|SALE/,
+];
+const ITEM_STATE_KEYWORDS = ["新品", "未開封", "正規", "国内", "開封", "中古", "ランク", "海外版", "整備", "純正", "保証"];
 
-# 形式
-- 本文は80〜110文字程度（URL・ハッシュタグ・#PRは含めない）。ハッシュタグを追加した分、以前より短めにしている。
-- 絵文字は控えめに、多くても1つまで。
-- 次の順で構成する。
-  1. 本文
-  2. 改行してアフィリエイトURL（渡されたURLを一字一句そのまま。改変・短縮しない）
-  3. 改行して「#セール情報」（固定のハッシュタグ。必ずこの文字列のまま追加する）
-  4. 改行して「#PR」（文末に必ず置く）
-- 前置き、説明、引用符、コードブロックは付けず、投稿文だけを出力する。`;
-
-function formatYen(value: number): string {
-  return `${value.toLocaleString("ja-JP")}円`;
+function isSalesConditionOnly(segment: string): boolean {
+  return (
+    SALES_CONDITION_PATTERNS.some((pattern) => pattern.test(segment)) &&
+    !ITEM_STATE_KEYWORDS.some((keyword) => segment.includes(keyword))
+  );
 }
 
-function buildUserPrompt(product: ScoredProduct): string {
-  return [
-    "次の商品について投稿文を作成してください。",
-    "",
-    `商品名: ${product.name}`,
-    `現在価格: ${formatYen(product.currentPrice)}`,
-    `前回価格: ${formatYen(product.previousPrice)}`,
-    `値下げ額: ${formatYen(product.dropAmount)}`,
-    `値下げ率: ${product.dropRate}%`,
-    `レビュー評価: ${product.reviewAverage ?? "データなし"}`,
-    `レビュー件数: ${product.reviewCount ?? "データなし"}件`,
-    `アフィリエイトURL: ${product.affiliateUrl}`,
-  ].join("\n");
+function shortenName(name: string): string {
+  const cleaned = name
+    .replace(BRACKETED_SEGMENT, (segment) => (isSalesConditionOnly(segment) ? " " : segment))
+    .replace(/[★☆◆◇■□●○♪]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const base = cleaned || name.trim();
+  if (base.length <= NAME_MAX_LENGTH) return base;
+
+  const cut = base.slice(0, NAME_MAX_LENGTH + 1);
+  const lastSpace = cut.lastIndexOf(" ");
+  const head = lastSpace >= NAME_MIN_CUT_LENGTH ? cut.slice(0, lastSpace) : base.slice(0, NAME_MAX_LENGTH);
+  return `${head}…`;
+}
+
+function formatYen(value: number): string {
+  return `¥${value.toLocaleString("ja-JP")}`;
+}
+
+// 値下げ率は前回価格と現在価格から計算する（score の dropRate は NUMERIC で文字列になるため使わない）。
+// 1%未満は「0%OFF」にならないよう小数1桁で表示する。
+function formatDropRate(previousPrice: number, currentPrice: number): string {
+  const rate = ((previousPrice - currentPrice) / previousPrice) * 100;
+  const rounded = Math.round(rate);
+  return rounded >= 1 ? `${rounded}%` : `${rate.toFixed(1)}%`;
+}
+
+// レビューは取得できた値だけを書く。件数0件のときの評価（0）は実データではないため書かない。
+function formatReview(reviewAverage: number | null, reviewCount: number | null): string | null {
+  const hasCount = reviewCount !== null && reviewCount > 0;
+  const hasAverage = reviewAverage !== null && reviewAverage > 0 && reviewCount !== 0;
+  if (hasAverage && hasCount) {
+    return `レビュー評価${reviewAverage}（${reviewCount.toLocaleString("ja-JP")}件）`;
+  }
+  if (hasAverage) return `レビュー評価${reviewAverage}`;
+  if (hasCount) return `レビュー${reviewCount.toLocaleString("ja-JP")}件`;
+  return null;
+}
+
+function buildPost(product: ScoredProduct, affiliateUrl: string): string {
+  const priceLine = `${formatYen(product.previousPrice)} → ${formatYen(product.currentPrice)}（${formatDropRate(
+    product.previousPrice,
+    product.currentPrice
+  )}OFF）`;
+  const body = [priceLine, shortenName(product.name), formatReview(product.reviewAverage, product.reviewCount)]
+    .filter((line): line is string => line !== null)
+    .join("\n");
+  return `${body}\n\n${affiliateUrl}\n\n#PR`;
 }
 
 export async function GET(request: Request) {
   const secret = process.env.X_POST_SECRET;
   if (!secret || request.headers.get("x-api-secret") !== secret) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return NextResponse.json(
-      { error: "ANTHROPIC_API_KEY が設定されていません" },
-      { status: 500 }
-    );
   }
 
   // 値下げ商品の上位は、score ルートのロジックをそのまま呼び出して取得する。
@@ -108,51 +142,16 @@ export async function GET(request: Request) {
     );
   }
 
-  try {
-    const client = new Anthropic();
-    const message = await client.messages.create({
-      model: MODEL,
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: buildUserPrompt(product) }],
-    });
+  const post = buildPost(product, product.affiliateUrl);
 
-    const post = message.content
-      .flatMap((block) => (block.type === "text" ? [block.text] : []))
-      .join("")
-      .trim();
-
-    if (message.stop_reason === "max_tokens" || !post) {
-      console.error(
-        `[generate-post] unusable output (stop_reason: ${message.stop_reason})`
-      );
-      return NextResponse.json(
-        { error: "投稿文の生成に失敗しました" },
-        { status: 502 }
-      );
-    }
-
-    return NextResponse.json({
-      post,
-      // ルールが守られているかの簡易チェック（ブロックはせず、確認用に返す）
-      checks: {
-        length: post.length,
-        endsWithPR: post.endsWith("#PR"),
-        containsAffiliateUrl: post.includes(product.affiliateUrl),
-      },
-      model: message.model,
-      product,
-    });
-  } catch (error) {
-    // SDK のエラー本文はキーを含まないが、クライアントには詳細を返さない
-    const detail =
-      error instanceof Anthropic.APIError
-        ? `${error.status ?? "connection"} ${error.message}`
-        : String(error);
-    console.error(`[generate-post] Anthropic API error: ${detail}`);
-    return NextResponse.json(
-      { error: "投稿文の生成に失敗しました" },
-      { status: 502 }
-    );
-  }
+  return NextResponse.json({
+    post,
+    // ルールが守られているかの簡易チェック（ブロックはせず、確認用に返す）
+    checks: {
+      length: post.length,
+      endsWithPR: post.endsWith("#PR"),
+      containsAffiliateUrl: post.includes(product.affiliateUrl),
+    },
+    product,
+  });
 }

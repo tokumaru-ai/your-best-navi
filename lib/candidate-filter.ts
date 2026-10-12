@@ -12,3 +12,34 @@ export function candidateFilterSql(alias: string): string {
     " AND "
   );
 }
+
+// 値下げ経路だけで外す、新品の正規流通品ではない（状態・流通経路が異なる）ことを示す語。
+// 中古・開封品・並行輸入品などは、通常の新品と同じ商品として値下げを紹介できないため外す。
+// ランクは全角英字で書かれることもあるため、両方を入れる。
+const PRICE_DROP_EXCLUDED_NAME_KEYWORDS = [
+  "Nランク",
+  "Sランク",
+  "Aランク",
+  "Bランク",
+  "Ｎランク",
+  "Ｓランク",
+  "Ａランク",
+  "Ｂランク",
+  "開封済",
+  "展示品",
+  "訳あり",
+  "中古",
+  "アウトレット",
+  "整備済",
+  "リファービッシュ",
+  "海外版",
+  "並行輸入",
+];
+
+// 値下げ経路の候補クエリで使う SQL 条件。共通の除外（candidateFilterSql）に、上の語の除外を加える。
+export function priceDropCandidateFilterSql(alias: string): string {
+  return [
+    candidateFilterSql(alias),
+    ...PRICE_DROP_EXCLUDED_NAME_KEYWORDS.map((keyword) => `${alias}.name NOT LIKE '%${keyword}%'`),
+  ].join(" AND ");
+}

@@ -1,13 +1,16 @@
 import { NextResponse } from "next/server";
 import { ensureSchema, getSql } from "@/lib/db";
-import { candidateFilterSql } from "@/lib/candidate-filter";
+import { priceDropCandidateFilterSql } from "@/lib/candidate-filter";
 import { mainUnitReasonSql, type MainUnitReason } from "@/lib/main-unit";
 
 const LIMIT = 10;
+// 最新の取得がこの時間より古い商品は候補にしない。楽天の取得対象（ジャンル上位など）から外れた商品は
+// 価格が更新されず、古い価格を「現在の値下げ価格」として投稿してしまうため。
+const MAX_PRICE_AGE_HOURS = 24;
 
 // 各商品の price_history から直近2回分（rn = 1 が今回、rn = 2 が前回）を取り出し、
 // 値下げ額・値下げ率を計算する。履歴が1回分しかない商品は JOIN で落ちる。
-// 値下げ額が0以下の商品と、候補から外す商品（candidateFilterSql）は除外し、「本体 > それ以外」、同じ区分の中では値下げ率の高い順に並べる。
+// 最新の取得が MAX_PRICE_AGE_HOURS 時間より古い商品、値下げ額が0以下の商品、候補から外す商品（priceDropCandidateFilterSql）は除外し、「本体 > それ以外」、同じ区分の中では値下げ率の高い順に並べる。
 // PostgreSQL では ORDER BY の式の中で SELECT の別名を使えないため、本体の判定は式をそのまま書く。
 const SCORE_QUERY = `
 WITH ranked AS (
@@ -16,6 +19,7 @@ WITH ranked AS (
     price,
     review_count,
     review_average,
+    fetched_at,
     ROW_NUMBER() OVER (
       PARTITION BY product_id ORDER BY fetched_at DESC, id DESC
     ) AS rn
@@ -37,8 +41,9 @@ SELECT
 FROM products p
 JOIN ranked cur  ON cur.product_id  = p.id AND cur.rn  = 1
 JOIN ranked prev ON prev.product_id = p.id AND prev.rn = 2
-WHERE prev.price - cur.price > 0
-  AND ${candidateFilterSql("p")}
+WHERE cur.fetched_at > now() - make_interval(hours => ${MAX_PRICE_AGE_HOURS})
+  AND prev.price - cur.price > 0
+  AND ${priceDropCandidateFilterSql("p")}
 ORDER BY ((${mainUnitReasonSql("p")}) IS NOT NULL) DESC, (prev.price - cur.price) * 1.0 / prev.price DESC, "dropAmount" DESC, p.id ASC
 LIMIT ${LIMIT}
 `;
