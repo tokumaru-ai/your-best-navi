@@ -23,6 +23,10 @@ type GeneratedProduct = {
   dropRate: number;
   reviewAverage: number | null;
   reviewCount: number | null;
+  currentFetchedAt: string;
+  previousFetchedAt: string;
+  lowestPrice: number;
+  comparedDays: number;
   affiliateUrl: string | null;
   imageUrl: string | null;
   mainUnitReason: MainUnitReason | null;
