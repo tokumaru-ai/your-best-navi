@@ -36,6 +36,8 @@ type RakutenItem = {
   reviewCount?: number;
   reviewAverage?: number;
   rank?: number;
+  // 1: 在庫あり、0: 在庫なし
+  availability?: number;
   // ランキングAPIは genreId を文字列で返す（商品検索APIは数値）
   genreId?: number | string;
 };
@@ -101,7 +103,9 @@ async function searchItems(keyword: string, page: number): Promise<RakutenItem[]
     `&shopCode=${SHOP.shopCode}` +
     `&keyword=${encodeURIComponent(keyword)}` +
     `&hits=${SHOP_SEARCH_HITS}` +
-    `&page=${page}`;
+    `&page=${page}` +
+    // 既定では在庫のある商品しか返らない。在庫切れになった商品も取得し、availability = 0 を記録して投稿候補から外すため、すべて返させる
+    `&availability=0`;
 
   const res = await fetch(url, {
     headers: {
@@ -176,8 +180,8 @@ async function saveItems(
       await client.query(
         `
         INSERT INTO price_history
-          (product_id, price, review_count, review_average, rank)
-        VALUES ($1, $2, $3, $4, $5)
+          (product_id, price, review_count, review_average, rank, availability)
+        VALUES ($1, $2, $3, $4, $5, $6)
         `,
         [
           productId,
@@ -186,6 +190,7 @@ async function saveItems(
           item.reviewAverage ?? null,
           // ランキング上の順位（1始まり）。取れない場合は取得順で代用する
           item.rank ?? index + 1,
+          item.availability ?? null,
         ]
       );
     }

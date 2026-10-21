@@ -21,6 +21,7 @@ const MIN_COMPARED_DAYS = 3;
 // 値下げ率は前回との比較で出すが、候補にするのは今回の価格が過去 LOWEST_PRICE_WINDOW_DAYS 日の最安値
 // （今回の記録を除く）を下回り、記録が MIN_RECORD_DAYS 日以上あり、比較した記録が MIN_COMPARED_DAYS 日分以上ある商品だけ。
 // comparedDays は最安値の比較に使った記録の日数（JSTの日付で重複を除く）で、投稿文の「記録のある○日分の中で最安値」に使う。
+// 最新の取得で在庫なし（availability = 0）の商品も除外する。availability を記録する前の取得（NULL）は在庫の有無が分からないため除外しない。
 // 最新の取得が MAX_PRICE_AGE_HOURS 時間より古い商品、前回の取得日時がない商品（投稿文に日時を書けない）、値下げ額が0以下の商品、候補から外す商品（priceDropCandidateFilterSql）は除外し、「本体 > それ以外」、同じ区分の中では値下げ率の高い順に並べる。
 // PostgreSQL では ORDER BY の式の中で SELECT の別名を使えないため、本体の判定は式をそのまま書く。
 const SCORE_QUERY = `
@@ -30,6 +31,7 @@ WITH ranked AS (
     price,
     review_count,
     review_average,
+    availability,
     fetched_at,
     ROW_NUMBER() OVER (
       PARTITION BY product_id ORDER BY fetched_at DESC, id DESC
@@ -76,6 +78,7 @@ JOIN ranked prev ON prev.product_id = p.id AND prev.rn = 2
 JOIN stats st    ON st.product_id   = p.id
 WHERE cur.fetched_at > now() - make_interval(hours => ${MAX_PRICE_AGE_HOURS})
   AND prev.fetched_at IS NOT NULL
+  AND cur.availability IS DISTINCT FROM 0
   AND prev.price - cur.price > 0
   AND cur.price < st.lowest_price
   AND st.record_days >= ${MIN_RECORD_DAYS}

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { TwitterApi } from "twitter-api-v2";
+import { ApiRequestError, ApiResponseError, TwitterApi } from "twitter-api-v2";
 
 // 画像URLを取得してBufferに変換する。twitter-api-v2 の uploadMedia はURLを直接受け付けないため、
 // ここでダウンロードしてから渡す必要がある。
@@ -18,6 +18,37 @@ async function fetchImageAsMedia(
 
   const buffer = Buffer.from(await res.arrayBuffer());
   return { buffer, mimeType: contentType };
+}
+
+// 失敗の原因を posts.error_message・cron_runs.detail に残すため、Xが返したエラーの本文を1行にまとめる。
+// エラーオブジェクトをそのまま文字列にすると、リクエスト（Authorization ヘッダーなど）が含まれうるため、
+// HTTPステータスと、レスポンス本文の title・detail・errors のメッセージだけを使う。
+const ERROR_DETAIL_MAX_LENGTH = 500;
+
+function describeXError(error: unknown): string {
+  let description: string;
+  if (error instanceof ApiResponseError) {
+    const { title, detail, error: errorText, errors } = error.data ?? {};
+    const messages = (errors ?? [])
+      .map((e) => ("message" in e ? e.message : undefined))
+      .filter((message): message is string => !!message);
+    description = [
+      `HTTP ${error.code}`,
+      title ? `title: ${title}` : null,
+      detail ? `detail: ${detail}` : null,
+      errorText ? `error: ${errorText}` : null,
+      messages.length > 0 ? `errors: ${messages.join(" / ")}` : null,
+    ]
+      .filter((part): part is string => part !== null)
+      .join(", ");
+  } else if (error instanceof ApiRequestError) {
+    // 通信自体の失敗（レスポンスなし）。twitter-api-v2 は元の例外を requestError で読めない版があるため、読めなければ例外自体の message を使う
+    description = `通信エラー: ${error.requestError?.message ?? error.message}`;
+  } else {
+    // 画像の取得失敗など、X API 以外の例外
+    description = error instanceof Error ? error.message : String(error);
+  }
+  return `Xへの投稿に失敗しました（${description.slice(0, ERROR_DETAIL_MAX_LENGTH)}）`;
 }
 
 export async function POST(request: Request) {
@@ -62,10 +93,11 @@ export async function POST(request: Request) {
       tweet: tweet.data,
     });
   } catch (error) {
-    console.error(error);
+    const message = describeXError(error);
+    console.error(`[x-post] ${message}`);
 
     return NextResponse.json(
-      { error: "Xへの投稿に失敗しました" },
+      { error: message },
       { status: 500 }
     );
   }

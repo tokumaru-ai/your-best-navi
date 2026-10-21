@@ -29,6 +29,11 @@ CREATE TABLE IF NOT EXISTS price_history (
   fetched_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- 楽天APIの availability（1: 在庫あり、0: 在庫なし）。在庫のない商品を投稿候補から外すために使う。
+-- price_history は本列追加より前にデプロイ済みのため、IF NOT EXISTS で既存環境に retrofit する。
+-- 本列追加より前の記録は NULL（在庫の有無が不明）。
+ALTER TABLE price_history ADD COLUMN IF NOT EXISTS availability INTEGER;
+
 CREATE INDEX IF NOT EXISTS idx_price_history_product_fetched
   ON price_history (product_id, fetched_at);
 
