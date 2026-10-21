@@ -48,7 +48,7 @@ function describeXError(error: unknown): string {
     // 画像の取得失敗など、X API 以外の例外
     description = error instanceof Error ? error.message : String(error);
   }
-  return `Xへの投稿に失敗しました（${description.slice(0, ERROR_DETAIL_MAX_LENGTH)}）`;
+  return description.slice(0, ERROR_DETAIL_MAX_LENGTH);
 }
 
 export async function POST(request: Request) {
@@ -58,7 +58,8 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { text, imageUrl } = await request.json();
+    // replyText が渡された場合は、本文（text）への返信として続けて投稿する
+    const { text, imageUrl, replyText } = await request.json();
 
     if (!text) {
       return NextResponse.json(
@@ -88,12 +89,36 @@ export async function POST(request: Request) {
       mediaIds ? { media: { media_ids: mediaIds } } : undefined
     );
 
-    return NextResponse.json({
-      success: true,
-      tweet: tweet.data,
-    });
+    if (!replyText) {
+      return NextResponse.json({
+        success: true,
+        tweet: tweet.data,
+      });
+    }
+
+    // 返信（リンク）が付かない本文だけが残らないよう、返信に失敗したら本文を削除し、失敗として返す。
+    // 削除にも失敗した場合は、本文が残っていることが分かるよう、その旨と本文のIDを返す。
+    try {
+      const reply = await client.v2.reply(replyText, tweet.data.id);
+      return NextResponse.json({
+        success: true,
+        tweet: tweet.data,
+        reply: reply.data,
+      });
+    } catch (replyError) {
+      const replyMessage = `Xへの返信に失敗しました（${describeXError(replyError)}）`;
+      let message: string;
+      try {
+        await client.v2.deleteTweet(tweet.data.id);
+        message = `${replyMessage}。本文（id ${tweet.data.id}）は削除しました`;
+      } catch (deleteError) {
+        message = `${replyMessage}。本文（id ${tweet.data.id}）の削除にも失敗しました（${describeXError(deleteError)}）。本文がXに残っています`;
+      }
+      console.error(`[x-post] ${message}`);
+      return NextResponse.json({ error: message }, { status: 500 });
+    }
   } catch (error) {
-    const message = describeXError(error);
+    const message = `Xへの投稿に失敗しました（${describeXError(error)}）`;
     console.error(`[x-post] ${message}`);
 
     return NextResponse.json(

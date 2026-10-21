@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server";
 import { ensureSchema, getSql } from "@/lib/db";
 import { getTrendingCandidates, type TrendingProduct } from "@/lib/trending-candidates";
-import type { MainUnitReason } from "@/lib/main-unit";
+import { getPriceDropProducts, type ScoredRow } from "@/lib/price-drop-candidates";
+import { buildSeriesPost } from "@/lib/price-drop-post";
+import {
+  dedupProductIds,
+  groupBySeries,
+  loadSeriesProductIds,
+  type SeriesGroup,
+} from "@/lib/price-drop-series";
 import { GET as fetchRakutenPrices } from "../../rakuten/fetch/route";
-import { GET as generatePost } from "../../products/generate-post/route";
-import { GET as getScoredProducts } from "../../products/score/route";
 import { POST as postToX } from "../../x-post/route";
 import { GET as fetchTrendingPosts } from "../../x-trending/fetch/route";
 import { GET as extractTrendingProducts } from "../../x-trending/extract/route";
@@ -13,30 +18,6 @@ import { GET as generateTrendingPost } from "../../x-trending/generate-post/rout
 
 // 実測42〜45秒に対する安全マージン。Hobbyプランの上限（300秒）内に収まる値。
 export const maxDuration = 120;
-
-type GeneratedProduct = {
-  id: number;
-  name: string;
-  currentPrice: number;
-  previousPrice: number;
-  dropAmount: number;
-  dropRate: number;
-  reviewAverage: number | null;
-  reviewCount: number | null;
-  currentFetchedAt: string;
-  previousFetchedAt: string;
-  lowestPrice: number;
-  comparedDays: number;
-  affiliateUrl: string | null;
-  imageUrl: string | null;
-  mainUnitReason: MainUnitReason | null;
-};
-
-type GeneratedPostResponse = {
-  post: string;
-  checks: { length: number; endsWithPR: boolean; containsAffiliateUrl: boolean };
-  product: GeneratedProduct;
-};
 
 // x-trending/generate-post のレスポンス形。商品の型は候補一覧と共通のものを lib から使う。
 type TrendingGeneratedPostResponse = {
@@ -76,12 +57,9 @@ async function recordPost(params: {
 // 同じ商品を再投稿しない期間
 const DEDUP_DAYS = 14;
 
-// 候補を上位から順に見て、DEDUP_DAYS 日以内に投稿していない最初の商品IDを返す。
-// すべて投稿済み（または候補なし）なら undefined。
-async function pickFirstNotRecentlyPosted(
-  productIds: number[]
-): Promise<number | undefined> {
-  if (productIds.length === 0) return undefined;
+// productIds のうち、DEDUP_DAYS 日以内に投稿した商品のID
+async function recentlyPostedIds(productIds: number[]): Promise<Set<number>> {
+  if (productIds.length === 0) return new Set();
   const rows = (await getSql().query(
     `
     SELECT product_id FROM post_dedup
@@ -90,19 +68,38 @@ async function pickFirstNotRecentlyPosted(
     `,
     [productIds, DEDUP_DAYS]
   )) as { product_id: number }[];
-  const recentlyPosted = new Set(rows.map((row) => row.product_id));
+  return new Set(rows.map((row) => row.product_id));
+}
+
+// 候補を上位から順に見て、DEDUP_DAYS 日以内に投稿していない最初の商品IDを返す。
+// すべて投稿済み（または候補なし）なら undefined。
+async function pickFirstNotRecentlyPosted(
+  productIds: number[]
+): Promise<number | undefined> {
+  const recentlyPosted = await recentlyPostedIds(productIds);
   return productIds.find((id) => !recentlyPosted.has(id));
 }
 
-async function upsertDedup(productId: number) {
+// シリーズのグループを上から順に見て、どの商品も DEDUP_DAYS 日以内に投稿していない最初のグループを返す。
+// 重複防止の対象は、候補に残った商品だけでなく、DBにあるそのシリーズの本体すべて（dedupProductIds）。
+async function pickFirstNotRecentlyPostedGroup(
+  groups: SeriesGroup[]
+): Promise<{ group: SeriesGroup; dedupIds: number[] } | undefined> {
+  const seriesProductIds = await loadSeriesProductIds();
+  const withIds = groups.map((group) => ({ group, dedupIds: dedupProductIds(group, seriesProductIds) }));
+  const recentlyPosted = await recentlyPostedIds([...new Set(withIds.flatMap((g) => g.dedupIds))]);
+  return withIds.find(({ dedupIds }) => !dedupIds.some((id) => recentlyPosted.has(id)));
+}
+
+async function upsertDedup(productIds: number[]) {
   await getSql().query(
     `
     INSERT INTO post_dedup (product_id, last_posted_at)
-    VALUES ($1, now())
+    SELECT unnest($1::int[]), now()
     ON CONFLICT (product_id) DO UPDATE SET
       last_posted_at = now()
     `,
-    [productId]
+    [productIds]
   );
 }
 
@@ -338,8 +335,20 @@ export async function GET(request: Request) {
 
     let source: PostSource;
     let post: string;
-    let product: GeneratedProduct | TrendingProduct;
+    // 本文への返信として続けて投稿する文（値下げ経路のみ。リンクは返信だけに入れる）
+    let replyText: string | null = null;
+    let product: ScoredRow | TrendingProduct;
     let checks: { length: number; endsWithPR: boolean; containsAffiliateUrl: boolean };
+    // 投稿に成功したとき post_dedup に入れる商品ID
+    let dedupIds: number[];
+    // 値下げ経路で選んだシリーズ（cron_runs の detail と dry-run の結果に出す）
+    let seriesSummary: {
+      series: string | null;
+      productCount: number;
+      productIds: number[];
+      representativeId: number;
+      dedupProductCount: number;
+    } | null = null;
 
     if (trendingPost) {
       // Xトレンドで条件を満たす商品があれば、そちらを優先する
@@ -347,58 +356,89 @@ export async function GET(request: Request) {
       post = trendingPost.post;
       product = trendingPost.product;
       checks = trendingPost.checks;
+      dedupIds = [product.id];
     } else {
       source = "price_drop";
 
-      // a. 値下げ率の上位を上から順に見て、DEDUP_DAYS 日以内に投稿していない最初の商品を選ぶ
-      const scoreRes = await getScoredProducts(internalRequest);
-      if (!scoreRes.ok) {
-        outcome = { status: "failed", detail: "price_drop: 値下げ商品の取得に失敗しました" };
-        return NextResponse.json(
-          { error: "値下げ商品の取得に失敗しました", dryRun },
-          { status: 500 }
-        );
-      }
-      const { products: scored } = (await scoreRes.json()) as { products: GeneratedProduct[] };
+      // a. 候補条件を通った商品をすべて取り出してシリーズごとにまとめ、上から順に見て、
+      //    DEDUP_DAYS 日以内に投稿していない最初のシリーズを選ぶ
+      const groups = groupBySeries(await getPriceDropProducts(null));
 
       // 値下げ商品がない日は投稿しない（根拠のない投稿で埋めない）
-      if (scored.length === 0) {
+      if (groups.length === 0) {
         const reason = "根拠のある値下げなし";
         outcome = { status: "skipped", detail: reason };
         return NextResponse.json({ skipped: true, reason, source, dryRun });
       }
 
-      const productId = await pickFirstNotRecentlyPosted(scored.map((p) => p.id));
-      if (productId === undefined) {
-        const reason = `根拠のある値下げなし（値下げ商品の上位${scored.length}件すべてが${DEDUP_DAYS}日以内に投稿済み）`;
+      const picked = await pickFirstNotRecentlyPostedGroup(groups);
+      if (picked === undefined) {
+        const reason = `根拠のある値下げなし（値下げのあった${groups.length}シリーズすべてが${DEDUP_DAYS}日以内に投稿済み）`;
         outcome = { status: "skipped", detail: reason };
         return NextResponse.json({ skipped: true, reason, source, dryRun });
       }
 
-      const generateRes = await generatePost(withProductId(internalRequest, productId));
+      const { group } = picked;
+      const representative = group.representative;
+      const built = representative.affiliateUrl
+        ? buildSeriesPost({
+            series: group.series,
+            productCount: group.products.length,
+            representativeName: representative.name,
+            affiliateUrl: representative.affiliateUrl,
+            previousMinPrice: group.previousMinPrice,
+            previousMaxPrice: group.previousMaxPrice,
+            currentMinPrice: group.currentMinPrice,
+            currentMaxPrice: group.currentMaxPrice,
+            previousFetchedFrom: group.previousFetchedFrom,
+            previousFetchedTo: group.previousFetchedTo,
+            currentFetchedFrom: group.currentFetchedFrom,
+            currentFetchedTo: group.currentFetchedTo,
+          })
+        : null;
 
-      if (!generateRes.ok) {
-        const errorBody = (await generateRes.json().catch(() => ({}))) as { error?: string };
-        const errorMessage = errorBody.error ?? "投稿文の生成に失敗しました";
+      if (!built) {
+        const errorMessage = representative.affiliateUrl
+          ? "価格の取得日時を読めないため、投稿文を作れません"
+          : "代表商品に affiliate_url がありません";
 
         if (!dryRun) {
           await recordPost({
-            productId,
+            productId: representative.id,
             postText: "",
             status: "failed",
             errorMessage,
           });
         }
 
-        outcome = { status: "failed", detail: `price_drop: ${errorMessage}`, productId };
+        outcome = { status: "failed", detail: `price_drop: ${errorMessage}`, productId: representative.id };
         return NextResponse.json({ error: errorMessage, dryRun }, { status: 500 });
       }
 
-      const generated = (await generateRes.json()) as GeneratedPostResponse;
-      post = generated.post;
-      product = generated.product;
-      checks = generated.checks;
+      post = built.body;
+      replyText = built.reply;
+      product = representative;
+      checks = {
+        length: built.body.length,
+        endsWithPR: built.body.endsWith("#PR"),
+        containsAffiliateUrl: built.reply.includes(representative.affiliateUrl!),
+      };
+      dedupIds = picked.dedupIds;
+      seriesSummary = {
+        series: group.series,
+        productCount: group.products.length,
+        productIds: group.products.map((p) => p.id),
+        representativeId: representative.id,
+        dedupProductCount: picked.dedupIds.length,
+      };
     }
+
+    // cron_runs の detail に、選んだシリーズを併記する
+    const sourceLabel = seriesSummary?.series
+      ? `${source}（${seriesSummary.series} ${seriesSummary.productCount}種類）`
+      : source;
+    // posts.post_text には、本文と返信の両方を残す
+    const recordedText = replyText ? `${post}\n\n[返信]\n${replyText}` : post;
 
     if (dryRun) {
       // 実際のXアクセス（uploadMedia・tweet）は一切行わず、画像取得までを検証する
@@ -406,7 +446,7 @@ export async function GET(request: Request) {
 
       outcome = {
         status: "success",
-        detail: `${source}: dry-run: 実際の投稿は行っていません`,
+        detail: `${sourceLabel}: dry-run: 実際の投稿は行っていません`,
         productId: product.id,
       };
       return NextResponse.json({
@@ -414,8 +454,10 @@ export async function GET(request: Request) {
         wouldPost: true,
         trendingFetch: trendingFetchNote,
         source,
+        series: seriesSummary,
         product,
         post,
+        reply: replyText,
         checks,
         image,
       });
@@ -428,11 +470,11 @@ export async function GET(request: Request) {
         "x-api-secret": secret,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ text: post, imageUrl: product.imageUrl }),
+      body: JSON.stringify({ text: post, imageUrl: product.imageUrl, replyText }),
     });
 
     let xPostOk: boolean;
-    let xPostBody: { success?: boolean; tweet?: unknown; error?: string };
+    let xPostBody: { success?: boolean; tweet?: unknown; reply?: unknown; error?: string };
     try {
       const xPostRes = await postToX(xPostRequest);
       xPostOk = xPostRes.ok;
@@ -447,35 +489,38 @@ export async function GET(request: Request) {
       const errorMessage = xPostBody.error ?? "Xへの投稿に失敗しました";
       await recordPost({
         productId: product.id,
-        postText: post,
+        postText: recordedText,
         status: "failed",
         errorMessage,
       });
-      outcome = { status: "failed", detail: `${source}: ${errorMessage}`, productId: product.id };
+      outcome = { status: "failed", detail: `${sourceLabel}: ${errorMessage}`, productId: product.id };
       return NextResponse.json({ error: errorMessage }, { status: 500 });
     }
 
     await recordPost({
       productId: product.id,
-      postText: post,
+      postText: recordedText,
       status: "success",
     });
 
-    // e. 投稿成功時のみ dedup を更新する
-    await upsertDedup(product.id);
+    // e. 投稿成功時のみ dedup を更新する（値下げ経路では、そのシリーズの本体すべて）
+    await upsertDedup(dedupIds);
 
     // Xトレンド経由で実際に投稿できた場合のみ、該当する x_trending_posts に印を付ける
     if (source === "trending") {
       await markTrendingPosted(product.id);
     }
 
-    outcome = { status: "success", detail: source, productId: product.id };
+    outcome = { status: "success", detail: sourceLabel, productId: product.id };
     return NextResponse.json({
       posted: true,
       source,
+      series: seriesSummary,
       product,
       post,
+      reply: replyText,
       tweet: xPostBody.tweet,
+      replyTweet: xPostBody.reply,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

@@ -189,3 +189,62 @@ export function buildPriceDropPost(product: PriceDropPostInput, affiliateUrl: st
     .join("\n");
   return `${body}\n\n${affiliateUrl}\n\n#PR`;
 }
+
+// シリーズでまとめた値下げの投稿。本文と返信の2回に分けて投稿する。
+// 本文にはリンクを入れず、取得した値（シリーズ名・種類の数・前回と今回の価格帯・取得日時）だけを書く。
+// 返信に代表商品（値下げ額が最大）のアフィリエイトリンクを1本だけ入れる。
+// 返信だけが単独で表示されても広告と分かるよう、返信の文章にも #PR を入れる（リンクは読みやすさのため次の行）。
+export type SeriesPostInput = {
+  // シリーズ名。null のときは、その商品1件だけの投稿として商品名を使う
+  series: string | null;
+  productCount: number;
+  representativeName: string;
+  affiliateUrl: string;
+  previousMinPrice: number;
+  previousMaxPrice: number;
+  currentMinPrice: number;
+  currentMaxPrice: number;
+  // 取得日時（ISO文字列または Date）。シリーズ内で異なる場合は最も古いものから新しいものまでを書く
+  previousFetchedFrom: string | Date;
+  previousFetchedTo: string | Date;
+  currentFetchedFrom: string | Date;
+  currentFetchedTo: string | Date;
+};
+
+export const SERIES_REPLY_NOTE = "条件・在庫は商品ページで確認 #PR";
+
+function formatPriceRange(min: number, max: number): string {
+  return min === max ? formatYen(min) : `${formatYen(min)}〜${formatYen(max)}`;
+}
+
+// 取得日時の範囲。同じ表示になるなら1つだけ書く。読めなければ null
+function formatFetchedRange(from: string | Date, to: string | Date): string | null {
+  const fromText = formatFetchedAt(new Date(from).toISOString());
+  const toText = formatFetchedAt(new Date(to).toISOString());
+  if (!fromText || !toText) return null;
+  return fromText === toText ? fromText : `${fromText}〜${toText}`;
+}
+
+// 取得日時を読めない場合は null を返す（根拠なしでは投稿しない）
+export function buildSeriesPost(input: SeriesPostInput): { body: string; reply: string } | null {
+  const previousAt = formatFetchedRange(input.previousFetchedFrom, input.previousFetchedTo);
+  const currentAt = formatFetchedRange(input.currentFetchedFrom, input.currentFetchedTo);
+  if (!previousAt || !currentAt) return null;
+
+  const title =
+    input.series !== null
+      ? `${input.series}（${input.productCount}種類）`
+      : shortenName(input.representativeName);
+  const body = [
+    title,
+    `${formatPriceRange(input.previousMinPrice, input.previousMaxPrice)} → ${formatPriceRange(
+      input.currentMinPrice,
+      input.currentMaxPrice
+    )}`,
+    `取得日時 ${previousAt} → ${currentAt}`,
+  ].join("\n");
+  return {
+    body: `${body}\n\n#PR`,
+    reply: `${SERIES_REPLY_NOTE}\n${input.affiliateUrl}`,
+  };
+}
