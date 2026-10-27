@@ -335,10 +335,9 @@ export async function GET(request: Request) {
 
     let source: PostSource;
     let post: string;
-    // 本文への返信として続けて投稿する文（値下げ経路のみ。リンクは返信だけに入れる）
-    let replyText: string | null = null;
     let product: ScoredRow | TrendingProduct;
-    let checks: { length: number; endsWithPR: boolean; containsAffiliateUrl: boolean };
+    // hasPR: 広告表示（#PR）が決まった位置にあるか（トレンド経路は末尾、値下げ経路は1行目）
+    let checks: { length: number; hasPR: boolean; containsAffiliateUrl: boolean };
     // 投稿に成功したとき post_dedup に入れる商品ID
     let dedupIds: number[];
     // 値下げ経路で選んだシリーズ（cron_runs の detail と dry-run の結果に出す）
@@ -355,7 +354,11 @@ export async function GET(request: Request) {
       source = "trending";
       post = trendingPost.post;
       product = trendingPost.product;
-      checks = trendingPost.checks;
+      checks = {
+        length: trendingPost.checks.length,
+        hasPR: trendingPost.checks.endsWithPR,
+        containsAffiliateUrl: trendingPost.checks.containsAffiliateUrl,
+      };
       dedupIds = [product.id];
     } else {
       source = "price_drop";
@@ -399,7 +402,7 @@ export async function GET(request: Request) {
 
       if (!built) {
         const errorMessage = representative.affiliateUrl
-          ? "価格の取得日時を読めないため、投稿文を作れません"
+          ? "価格の取得日時、または投稿に使える商品名がないため、投稿文を作れません"
           : "代表商品に affiliate_url がありません";
 
         if (!dryRun) {
@@ -415,13 +418,13 @@ export async function GET(request: Request) {
         return NextResponse.json({ error: errorMessage, dryRun }, { status: 500 });
       }
 
-      post = built.body;
-      replyText = built.reply;
+      // 値下げ経路は返信なしの1投稿で、#PR は1行目に書く
+      post = built;
       product = representative;
       checks = {
-        length: built.body.length,
-        endsWithPR: built.body.endsWith("#PR"),
-        containsAffiliateUrl: built.reply.includes(representative.affiliateUrl!),
+        length: built.length,
+        hasPR: built.startsWith("#PR\n"),
+        containsAffiliateUrl: built.includes(representative.affiliateUrl!),
       };
       dedupIds = picked.dedupIds;
       seriesSummary = {
@@ -437,8 +440,6 @@ export async function GET(request: Request) {
     const sourceLabel = seriesSummary?.series
       ? `${source}（${seriesSummary.series} ${seriesSummary.productCount}種類）`
       : source;
-    // posts.post_text には、本文と返信の両方を残す
-    const recordedText = replyText ? `${post}\n\n[返信]\n${replyText}` : post;
 
     if (dryRun) {
       // 実際のXアクセス（uploadMedia・tweet）は一切行わず、画像取得までを検証する
@@ -457,7 +458,6 @@ export async function GET(request: Request) {
         series: seriesSummary,
         product,
         post,
-        reply: replyText,
         checks,
         image,
       });
@@ -470,11 +470,11 @@ export async function GET(request: Request) {
         "x-api-secret": secret,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ text: post, imageUrl: product.imageUrl, replyText }),
+      body: JSON.stringify({ text: post, imageUrl: product.imageUrl }),
     });
 
     let xPostOk: boolean;
-    let xPostBody: { success?: boolean; tweet?: unknown; reply?: unknown; error?: string };
+    let xPostBody: { success?: boolean; tweet?: unknown; error?: string };
     try {
       const xPostRes = await postToX(xPostRequest);
       xPostOk = xPostRes.ok;
@@ -489,7 +489,7 @@ export async function GET(request: Request) {
       const errorMessage = xPostBody.error ?? "Xへの投稿に失敗しました";
       await recordPost({
         productId: product.id,
-        postText: recordedText,
+        postText: post,
         status: "failed",
         errorMessage,
       });
@@ -499,7 +499,7 @@ export async function GET(request: Request) {
 
     await recordPost({
       productId: product.id,
-      postText: recordedText,
+      postText: post,
       status: "success",
     });
 
@@ -518,9 +518,7 @@ export async function GET(request: Request) {
       series: seriesSummary,
       product,
       post,
-      reply: replyText,
       tweet: xPostBody.tweet,
-      replyTweet: xPostBody.reply,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

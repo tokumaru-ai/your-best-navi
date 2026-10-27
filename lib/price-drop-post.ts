@@ -15,20 +15,28 @@ export type PriceDropPostInput = {
   reviewCount: number | null;
 };
 
-// 投稿に載せる商品名の上限文字数。楽天の商品名は検索用キーワードが長く続くため、先頭だけを使う。
-// 状態を示す括弧（【国内正規品/新品】など）を残すため、本体名が切れないよう長めにしている。
-const NAME_MAX_LENGTH = 60;
-// 区切りで切るとき、これより短くなる場合は、上限の後ろの最初の区切りで切る
+// 投稿に載せる商品名の上限文字数（末尾の「…」を除く）。楽天の商品名は検索用キーワードが長く続くため、先頭だけを使う。
+const NAME_MAX_LENGTH = 30;
+// 宣伝文句・【】を取り除いた商品名がこれより短い商品は、何の商品か分かる名前にならないため候補にしない
+const NAME_MIN_LENGTH = 20;
+// 区切りで切るとき、これより短くなる位置では切らない。上限以内にこの長さ以上で切れる区切りがなければ、候補にしない
 const NAME_MIN_CUT_LENGTH = 15;
 // 比較した記録がこの日数分に満たないときは、「最安値」と書く根拠が足りないため投稿しない（score でも候補から外している）
 const MIN_COMPARED_DAYS = 3;
 // レビューはこの件数以上のときだけ書く。件数が少ない評価は参考にならないため。
 const MIN_REVIEW_COUNT = 10;
 
-// 括弧で囲まれた部分のうち、販売条件（送料・ポイント・発送日・クーポンなど）や、
+// 「【…】」の括弧書きは、中身によらずすべて取り除く。販売条件・宣伝文句・状態の表記が混在し、商品名の本体ではないため。
+const LENTICULAR_BRACKET_SEGMENT = /【[^】]*】/g;
+// それ以外の括弧で囲まれた部分のうち、販売条件（送料・ポイント・発送日・クーポンなど）や、
 // こちらで確かめていない宣伝文句（楽天1位・ランキングなど）を書いたものを取り除く。
 // 状態を示す語（新品・未開封・正規品など）を含む括弧や、どちらか判断できない括弧は残す。
-const BRACKETED_SEGMENT = /【[^】]*】|［[^］]*］|\[[^\]]*\]|《[^》]*》|≪[^≫]*≫|＜[^＞]*＞/g;
+const BRACKETED_SEGMENT = /［[^］]*］|\[[^\]]*\]|《[^》]*》|≪[^≫]*≫|＜[^＞]*＞/g;
+// 商品名の先頭の宣伝文句。「！」「!」で終わる文（「新発売!!」「クーポンで最安3,380円！」など）と、「＼…／」で囲んだ文句。
+// 先頭から順に、続けて書かれたものをすべて取り除く。
+const LEADING_PROMO = /^(?:＼[^／]*／|[^！!]*[！!]+)/;
+// 宣伝文句を取り除いた後、先頭に残る記号
+const LEADING_LEFTOVER = /^[\s＼／]+/;
 // 「マルチポイント接続」などの仕様をポイント還元と取り違えないよう、ポイントだけは直前の語を見る
 const SALES_CONDITION_PATTERNS = [
   /楽天[1１]位|ランキング/,
@@ -90,35 +98,37 @@ function trimTrailingSeparators(text: string): string {
   return text.slice(0, end);
 }
 
-export function shortenName(name: string): string {
+// 先頭の宣伝文句を、続けて書かれたものも含めて取り除く。取り除くと何も残らない場合は、そこで止める
+function removeLeadingPromo(text: string): string {
+  let rest = text;
+  for (;;) {
+    const match = rest.match(LEADING_PROMO);
+    if (!match) return rest;
+    const next = rest.slice(match[0].length).replace(LEADING_LEFTOVER, "");
+    if (next === "") return rest;
+    rest = next;
+  }
+}
+
+// 投稿に載せる商品名。先頭の宣伝文句・【】・販売条件の括弧を取り除き、NAME_MAX_LENGTH 文字以内の区切りで切る。
+// 取り除いた後が NAME_MIN_LENGTH 文字未満の場合と、単語の途中で切らずに上限以内に収められない場合は null（候補にしない）。
+export function shortenName(name: string): string | null {
   const cleaned = name
+    .replace(LENTICULAR_BRACKET_SEGMENT, " ")
     .replace(BRACKETED_SEGMENT, (segment) => (isSalesConditionOnly(segment) ? " " : segment))
     .replace(/[★☆◆◇■□●○♪]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  const base = cleaned || name.trim();
+  const base = trimTrailingSeparators(removeLeadingPromo(cleaned).trim());
+  if (base.length < NAME_MIN_LENGTH) return null;
   if (base.length <= NAME_MAX_LENGTH) return base;
 
-  // 上限以内で最も後ろの区切りで切る。短くなりすぎる場合は、上限の後ろの最初の区切りで切る。
-  // どちらもなければ（区切りのない長い名前）、単語の途中で切らないよう全文を使う。
+  // 上限以内で最も後ろの区切りで切る
   const depths = bracketDepths(base);
-  let cutAt = -1;
   for (let i = NAME_MAX_LENGTH; i >= NAME_MIN_CUT_LENGTH; i--) {
-    if (isBreakPosition(base, i, depths)) {
-      cutAt = i;
-      break;
-    }
+    if (isBreakPosition(base, i, depths)) return `${trimTrailingSeparators(base.slice(0, i))}…`;
   }
-  if (cutAt === -1) {
-    for (let i = NAME_MAX_LENGTH + 1; i < base.length; i++) {
-      if (isBreakPosition(base, i, depths)) {
-        cutAt = i;
-        break;
-      }
-    }
-  }
-  if (cutAt === -1) return base;
-  return `${trimTrailingSeparators(base.slice(0, cutAt))}…`;
+  return null;
 }
 
 function formatYen(value: number): string {
@@ -166,12 +176,13 @@ function formatReview(reviewAverage: number | null, reviewCount: number | null):
     : `レビュー${count}`;
 }
 
-// 取得日時を読めない場合、比較した記録が MIN_COMPARED_DAYS 日分に満たない場合は null を返す（根拠なしでは投稿しない）
+// 取得日時を読めない場合、比較した記録が MIN_COMPARED_DAYS 日分に満たない場合、商品名を作れない場合は null を返す（根拠なしでは投稿しない）
 export function buildPriceDropPost(product: PriceDropPostInput, affiliateUrl: string): string | null {
   const previousAt = formatFetchedAt(product.previousFetchedAt);
   const currentAt = formatFetchedAt(product.currentFetchedAt);
   const lowestPriceLine = formatLowestPriceLine(product.comparedDays);
-  if (!previousAt || !currentAt || !lowestPriceLine) return null;
+  const name = shortenName(product.name);
+  if (!previousAt || !currentAt || !lowestPriceLine || !name) return null;
 
   const priceLine = `${formatYen(product.previousPrice)} → ${formatYen(product.currentPrice)}（${formatDropRate(
     product.previousPrice,
@@ -182,7 +193,7 @@ export function buildPriceDropPost(product: PriceDropPostInput, affiliateUrl: st
     priceLine,
     fetchedLine,
     lowestPriceLine,
-    shortenName(product.name),
+    name,
     formatReview(product.reviewAverage, product.reviewCount),
   ]
     .filter((line): line is string => line !== null)
@@ -190,10 +201,9 @@ export function buildPriceDropPost(product: PriceDropPostInput, affiliateUrl: st
   return `${body}\n\n${affiliateUrl}\n\n#PR`;
 }
 
-// シリーズでまとめた値下げの投稿。本文と返信の2回に分けて投稿する。
-// 本文にはリンクを入れず、取得した値（シリーズ名・種類の数・前回と今回の価格帯・取得日時）だけを書く。
-// 返信に代表商品（値下げ額が最大）のアフィリエイトリンクを1本だけ入れる。
-// 返信だけが単独で表示されても広告と分かるよう、返信の文章にも #PR を入れる（リンクは読みやすさのため次の行）。
+// シリーズでまとめた値下げの投稿。返信なしの1つの投稿にする。
+// 1行目に #PR を書き、取得した値（シリーズ名・種類の数・前回と今回の価格帯・取得日時）と、
+// 代表商品（値下げ額が最大）のアフィリエイトリンク1本だけを書く。
 export type SeriesPostInput = {
   // シリーズ名。null のときは、その商品1件だけの投稿として商品名を使う
   series: string | null;
@@ -211,7 +221,7 @@ export type SeriesPostInput = {
   currentFetchedTo: string | Date;
 };
 
-export const SERIES_REPLY_NOTE = "条件・在庫は商品ページで確認 #PR";
+const SERIES_POST_NOTE = "条件・在庫は商品ページで確認";
 
 function formatPriceRange(min: number, max: number): string {
   return min === max ? formatYen(min) : `${formatYen(min)}〜${formatYen(max)}`;
@@ -225,26 +235,25 @@ function formatFetchedRange(from: string | Date, to: string | Date): string | nu
   return fromText === toText ? fromText : `${fromText}〜${toText}`;
 }
 
-// 取得日時を読めない場合は null を返す（根拠なしでは投稿しない）
-export function buildSeriesPost(input: SeriesPostInput): { body: string; reply: string } | null {
+// 取得日時を読めない場合、商品名を作れない場合は null を返す（根拠なしでは投稿しない）
+export function buildSeriesPost(input: SeriesPostInput): string | null {
   const previousAt = formatFetchedRange(input.previousFetchedFrom, input.previousFetchedTo);
   const currentAt = formatFetchedRange(input.currentFetchedFrom, input.currentFetchedTo);
-  if (!previousAt || !currentAt) return null;
-
   const title =
     input.series !== null
       ? `${input.series}（${input.productCount}種類）`
       : shortenName(input.representativeName);
-  const body = [
+  if (!previousAt || !currentAt || !title) return null;
+
+  return [
+    "#PR",
     title,
     `${formatPriceRange(input.previousMinPrice, input.previousMaxPrice)} → ${formatPriceRange(
       input.currentMinPrice,
       input.currentMaxPrice
     )}`,
-    `取得日時 ${previousAt} → ${currentAt}`,
+    `取得 ${previousAt}→${currentAt}`,
+    SERIES_POST_NOTE,
+    input.affiliateUrl,
   ].join("\n");
-  return {
-    body: `${body}\n\n#PR`,
-    reply: `${SERIES_REPLY_NOTE}\n${input.affiliateUrl}`,
-  };
 }
