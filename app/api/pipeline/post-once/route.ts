@@ -388,6 +388,7 @@ export async function GET(request: Request) {
             series: group.series,
             productCount: group.products.length,
             representativeName: representative.name,
+            representativeIsMainUnit: representative.mainUnitReason !== null,
             affiliateUrl: representative.affiliateUrl,
             previousMinPrice: group.previousMinPrice,
             previousMaxPrice: group.previousMaxPrice,

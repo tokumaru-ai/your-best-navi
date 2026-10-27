@@ -137,7 +137,7 @@ export type ScoredRow = {
 export async function getPriceDropProducts(limit: number | null): Promise<ScoredRow[]> {
   await ensureSchema();
   const rows = ((await getSql().query(scoreQuery())) as Omit<ScoredRow, "totalFound">[]).filter(
-    (row) => shortenName(row.name) !== null
+    (row) => shortenName(row.name, row.mainUnitReason !== null) !== null
   );
   return (limit === null ? rows : rows.slice(0, limit)).map((row) => ({ ...row, totalFound: rows.length }));
 }
